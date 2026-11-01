@@ -5,6 +5,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QTemporaryDir>
+#include <QDir>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QTimer>
 #include <cstring>
@@ -134,6 +136,33 @@ private slots:
         manager.download(); QTRY_COMPARE(network.requests.size(), 4); manager.cancel();
         QCOMPARE(manager.state(), UpdateManager::State::Available); QVERIFY(manager.packagePath().isEmpty());
         QTest::qWait(220); QCOMPARE(manager.state(), UpdateManager::State::Available);
+    }
+    void failedInstallRestoresRetryControls_data() {
+        QTest::addColumn<QByteArray>("result");
+        QTest::newRow("reported-failure") << QByteArray(R"({"success":false,"error":"fixture: parent did not exit"})");
+        QTest::newRow("malformed-result") << QByteArray("incomplete json");
+        QTest::newRow("silent-exit") << QByteArray();
+    }
+    void failedInstallRestoresRetryControls() {
+        QFETCH(QByteArray, result);
+        QTemporaryDir temp; Network network;
+        const auto hash = QCryptographicHash::hash("package", QCryptographicHash::Sha256).toHex();
+        network.responses = {{Release()}, {hash + "  " + Filename.toUtf8()}, {"package"}};
+        QFile helper(temp.filePath("Apply-Update.ps1")); QVERIFY(helper.open(QIODevice::WriteOnly));
+        QByteArray script("param($Package,$Sha256,$Version,$TargetDirectory,$Mode,$ParentPid)\n");
+        if (!result.isEmpty()) script += "[IO.File]::WriteAllText([IO.Path]::Combine([IO.Path]::GetDirectoryName($Package),'update-result.json'),'" + result + "')\n";
+        script += "exit 1\n"; QCOMPARE(helper.write(script), script.size()); helper.close();
+        UpdateManager manager(nullptr, &network, "1.1.0", Repository, temp.path(), temp.path(), "portable");
+        manager.check(); QTRY_COMPARE(manager.state(), UpdateManager::State::Available);
+        manager.download(); QTRY_COMPARE(manager.state(), UpdateManager::State::Ready);
+        QString error; QVERIFY2(manager.install(error), qPrintable(error)); QCOMPARE(manager.state(), UpdateManager::State::Installing);
+        QTRY_COMPARE_WITH_TIMEOUT(manager.state(), UpdateManager::State::Ready, 20000);
+        QVERIFY(!manager.busy()); QVERIFY(QFileInfo::exists(manager.packagePath()));
+        if (result.contains("parent did not exit")) QVERIFY(manager.status().contains("parent did not exit"));
+        QVERIFY2(manager.install(error), qPrintable(error)); QCOMPARE(manager.state(), UpdateManager::State::Installing);
+        QTRY_COMPARE_WITH_TIMEOUT(manager.state(), UpdateManager::State::Ready, 20000);
+        const QDir work(QFileInfo(manager.packagePath()).absolutePath());
+        QCOMPARE(work.entryList({"update-result.previous-*.json"}, QDir::Files).size(), result.isEmpty() ? 0 : 1);
     }
     void noDownloadForCurrentVersionOrIncompleteRelease() {
         QTemporaryDir temp; Network network; network.responses = {{Release()}};

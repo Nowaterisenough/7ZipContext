@@ -57,6 +57,8 @@ UpdateManager::UpdateManager(QObject* parent, QNetworkAccessManager* network, QS
     cacheDirectory_ = cacheDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/7ZipContext/updates" : cacheDirectory;
     mode_ = mode.isEmpty() ? (ManagedInstallation(applicationDirectory_) ? "msi" : "portable") : mode;
     network_ = network ? network : new QNetworkAccessManager(this);
+    installMonitor_.setInterval(500);
+    connect(&installMonitor_, &QTimer::timeout, this, &UpdateManager::pollInstallation);
     QSettings settings(SettingsPath(), QSettings::IniFormat); autoCheck_ = settings.value("Updates/AutoCheck", true).toBool();
     const auto previous = settings.value("Updates/ResultFile").toString();
     if (QDir::cleanPath(previous).startsWith(QDir::cleanPath(cacheDirectory_) + '/')) {
@@ -68,7 +70,10 @@ UpdateManager::UpdateManager(QObject* parent, QNetworkAccessManager* network, QS
         }
     }
 }
-UpdateManager::~UpdateManager() { if (reply_) { reply_->disconnect(this); reply_->abort(); } }
+UpdateManager::~UpdateManager() {
+    stopInstallationMonitor();
+    if (reply_) { reply_->disconnect(this); reply_->abort(); }
+}
 void UpdateManager::setAutoCheck(bool enabled) { autoCheck_ = enabled; QSettings(SettingsPath(), QSettings::IniFormat).setValue("Updates/AutoCheck", enabled); emit changed(); }
 void UpdateManager::setState(State state, const QString& text) { state_ = state; status_ = text; emit changed(); }
 bool UpdateManager::newer(const QString& candidate, const QString& current) { return Version(candidate) && Version(current) && QVersionNumber::fromString(candidate) > QVersionNumber::fromString(current); }
@@ -184,6 +189,36 @@ void UpdateManager::cancel() {
     if (file_) { file_->cancelWriting(); file_.reset(); } hash_.reset();
     setState(release_.package.isEmpty() ? State::Idle : State::Available, QStringLiteral("已取消更新下载"));
 }
+void UpdateManager::stopInstallationMonitor() {
+    installMonitor_.stop();
+    if (helperProcessHandle_) { CloseHandle(helperProcessHandle_); helperProcessHandle_ = nullptr; }
+    helperPid_ = 0;
+}
+void UpdateManager::pollInstallation() {
+    if (state_ != State::Installing) { stopInstallationMonitor(); return; }
+    bool exited = false;
+    if (!helperProcessHandle_ && helperPid_ > 0) {
+        helperProcessHandle_ = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(helperPid_));
+        exited = !helperProcessHandle_ && GetLastError() == ERROR_INVALID_PARAMETER;
+    }
+    if (helperProcessHandle_) exited = WaitForSingleObject(helperProcessHandle_, 0) == WAIT_OBJECT_0;
+    QFile file(installResultPath_);
+    if (file.open(QIODevice::ReadOnly) && file.size() < 65536) {
+        QJsonParseError error;
+        const auto document = QJsonDocument::fromJson(file.readAll(), &error);
+        const auto result = document.object();
+        if (error.error == QJsonParseError::NoError && result.value("success").isBool()) {
+            stopInstallationMonitor();
+            if (result.value("success").toBool()) setState(State::Idle, QStringLiteral("更新组件已完成，请重新启动程序"));
+            else setState(State::Ready, QStringLiteral("更新未完成：%1。可以重试安装").arg(result.value("error").toString(QStringLiteral("更新组件返回错误")).left(2048)));
+            return;
+        }
+    }
+    if (exited) {
+        stopInstallationMonitor();
+        setState(State::Ready, QStringLiteral("更新组件已退出，但未返回有效结果。可以重试安装"));
+    }
+}
 bool UpdateManager::install(QString& error) {
     error.clear();
     if (state_ != State::Ready || packagePath_.isEmpty()) { error = QStringLiteral("请先下载并校验更新"); return false; }
@@ -200,13 +235,21 @@ bool UpdateManager::install(QString& error) {
         return reject(QStringLiteral("无法准备更新组件，请使用完整发行包"));
     }
     wchar_t system[MAX_PATH]{}; if (!GetSystemDirectoryW(system, MAX_PATH)) return reject(QStringLiteral("无法定位系统更新工具"));
+    installResultPath_ = QDir(workDirectory_).filePath("update-result.json");
+    if (QFileInfo::exists(installResultPath_)) {
+        const auto previous = QDir(workDirectory_).filePath("update-result.previous-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".json");
+        if (!QFile::rename(installResultPath_, previous)) return reject(QStringLiteral("无法保存上一次更新结果，请稍后重试"));
+    }
     const auto powershell = QDir(QString::fromWCharArray(system)).filePath("WindowsPowerShell/v1.0/powershell.exe");
     const QStringList arguments{"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", helper,
         "-Package", packagePath_, "-Sha256", QString::fromLatin1(checksum_), "-Version", release_.version, "-TargetDirectory", applicationDirectory_,
         "-Mode", mode_, "-ParentPid", QString::number(QCoreApplication::applicationPid())};
     QProcess process; process.setProgram(powershell); process.setArguments(arguments); process.setWorkingDirectory(workDirectory_);
     process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* arguments) { arguments->flags |= CREATE_NO_WINDOW; });
-    if (!process.startDetached()) return reject(QStringLiteral("无法启动更新组件"));
-    QSettings(SettingsPath(), QSettings::IniFormat).setValue("Updates/ResultFile", QDir(workDirectory_).filePath("update-result.json"));
-    setState(State::Installing, QStringLiteral("正在安装更新，程序将重新启动…")); return true;
+    stopInstallationMonitor();
+    if (!process.startDetached(&helperPid_)) return reject(QStringLiteral("无法启动更新组件"));
+    helperProcessHandle_ = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(helperPid_));
+    QSettings(SettingsPath(), QSettings::IniFormat).setValue("Updates/ResultFile", installResultPath_);
+    setState(State::Installing, QStringLiteral("正在安装更新，程序将重新启动…"));
+    installMonitor_.start(); return true;
 }

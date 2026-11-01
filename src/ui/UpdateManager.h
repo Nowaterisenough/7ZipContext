@@ -5,6 +5,7 @@
 #include <QNetworkAccessManager>
 #include <QPointer>
 #include <QSaveFile>
+#include <QTimer>
 #include <QCryptographicHash>
 #include <functional>
 #include <memory>
@@ -47,6 +48,8 @@ private:
     void fetch(const QUrl& url, qint64 limit, std::function<void(const QByteArray&)> finished);
     void startPackageDownload();
     void configureReply(class QNetworkReply* reply);
+    void pollInstallation();
+    void stopInstallationMonitor();
     QString currentVersion_, repository_, applicationDirectory_, cacheDirectory_, mode_;
     QString status_ = QStringLiteral("尚未检查更新"), packagePath_, workDirectory_;
     bool autoCheck_ = true;
@@ -58,4 +61,8 @@ private:
     std::unique_ptr<QCryptographicHash> hash_;
     QByteArray checksum_;
     qint64 received_ = 0;
+    QTimer installMonitor_;
+    QString installResultPath_;
+    qint64 helperPid_ = 0;
+    void* helperProcessHandle_ = nullptr;
 };
