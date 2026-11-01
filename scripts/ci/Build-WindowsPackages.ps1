@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$InstallDir = 'build/ci-install',
-    [string]$OutputDir = 'build/release',
+    [string]$OutputDir = 'build/release-packages',
     [string]$DotnetExecutable = 'dotnet',
     [switch]$MsvcRuntime
 )

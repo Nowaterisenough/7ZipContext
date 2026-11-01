@@ -87,13 +87,19 @@ jobs:
       - name: Package and verify MSI and portable ZIP
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: ./scripts/ci/Build-WindowsPackages.ps1 -Version $env:RELEASE_VERSION -InstallDir build/ci-install -OutputDir build/release -MsvcRuntime
+        run: |
+          Start-Transcript -Path build/package.log
+          try {
+            ./scripts/ci/Build-WindowsPackages.ps1 -Version $env:RELEASE_VERSION -InstallDir build/ci-install -OutputDir build/release-packages -MsvcRuntime
+          } finally {
+            Stop-Transcript
+          }
 
       - name: Upload release packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-x64-packages
-          path: build/release/*
+          path: build/release-packages/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -107,6 +113,7 @@ jobs:
             build/Testing/Temporary/*.log
             build/*-tests.log
             build/deploy.log
+            build/package.log
             build/update-helper-tests-*/*.log
             build/update-helper-tests-*/update-result.json
           if-no-files-found: ignore
