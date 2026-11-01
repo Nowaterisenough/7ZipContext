@@ -429,6 +429,8 @@ install(DIRECTORY Package/Assets DESTINATION .)
 install(DIRECTORY licenses DESTINATION .)
 qt_generate_deploy_app_script(TARGET 7ZipContextApp OUTPUT_SCRIPT qt_deploy_script NO_UNSUPPORTED_PLATFORM_ERROR)
 install(CODE "
+    # Qt 6.8 requires an absolute prefix when generating qt.conf.
+    get_filename_component(QT_DEPLOY_PREFIX \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\" ABSOLUTE)
     set(QT_DEPLOY_BIN_DIR \".\")
     set(QT_DEPLOY_LIB_DIR \".\")
     set(QT_DEPLOY_PLUGINS_DIR \"plugins\")

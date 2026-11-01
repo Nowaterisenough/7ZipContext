@@ -72,7 +72,9 @@ jobs:
         run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure --timeout 120
 
       - name: Deploy application and Qt runtime
-        run: cmake --install build --config $env:BUILD_TYPE --prefix build/ci-install
+        run: |
+          cmake --install build --config $env:BUILD_TYPE --prefix build/ci-install 2>&1 | Tee-Object -FilePath build/deploy.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test update installation and rollback with Windows PowerShell
         run: ./tests/UpdateHelperTests.ps1 -RuntimeDirectory build/ci-install -FailureExecutable "build/$env:BUILD_TYPE/UpdateSmokeFailure.exe"
@@ -104,6 +106,9 @@ jobs:
           path: |
             build/Testing/Temporary/*.log
             build/*-tests.log
+            build/deploy.log
+            build/update-helper-tests-*/*.log
+            build/update-helper-tests-*/update-result.json
           if-no-files-found: ignore
           retention-days: 14
 
