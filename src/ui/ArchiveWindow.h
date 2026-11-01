@@ -62,6 +62,7 @@ private:
     void editPasswords(bool existing);
     QString selectedPasswordList() const;
     void syncPasswordActions();
+    void syncPasswordSources();
     void syncUpdates();
 
     ArchiveController& controller_;
@@ -84,6 +85,8 @@ private:
     QProgressBar* progress_ = nullptr;
     SpeedChart* chart_ = nullptr;
     QListWidget* passwordLists_ = nullptr;
+    QWidget* passwordSourceRow_ = nullptr;
+    QComboBox* passwordSource_ = nullptr;
     QStackedWidget* passwordQueue_ = nullptr;
     QLabel *passwordSummary_ = nullptr, *passwordError_ = nullptr;
     QPushButton *editPasswordList_ = nullptr, *togglePasswordList_ = nullptr, *removePasswordList_ = nullptr;

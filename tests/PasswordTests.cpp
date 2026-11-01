@@ -95,6 +95,37 @@ private slots:
         QVERIFY(!controller.editPasswordList(id, "renamed", "secret\nnew", &invalid));
         QCOMPARE(controller.passwordLibrary().lists().first().comments.value("secret"), QStringLiteral("来自下载目录"));
     }
+    void uniquePasswordsKeepAllSourcesAndExactValues() {
+        QTemporaryDir temp; QString error; PasswordLibrary library(temp.filePath("library.dat")); QVERIFY(library.load(error));
+        QList<PasswordList> lists{{"a", "first", false, {"shared", " shared "}, {{"shared", "note-one"}}},
+            {"b", "second", true, {"shared", "SHARED"}, {{"shared", "note-two"}}},
+            {"c", "third", false, {"shared", "shared"}, {}}};
+        QVERIFY2(library.replace(lists, error), qPrintable(error));
+        PasswordLibrary restored(library.path()); QVERIFY(restored.load(error));
+        const auto& unique = restored.uniquePasswords(); QCOMPARE(unique.size(), 3);
+        QCOMPARE(unique[0].value, QStringLiteral("shared")); QCOMPARE(unique[0].sources.size(), 3); QVERIFY(unique[0].enabled);
+        QCOMPARE(unique[0].sources[0].comment, QStringLiteral("note-one")); QVERIFY(!unique[0].sources[0].enabled);
+        QCOMPARE(unique[0].sources[1].comment, QStringLiteral("note-two")); QVERIFY(unique[0].sources[1].enabled);
+        QCOMPARE(unique[1].value, QStringLiteral(" shared ")); QVERIFY(!unique[1].enabled);
+        QCOMPARE(unique[2].value, QStringLiteral("SHARED")); QVERIFY(unique[2].enabled);
+        QCOMPARE(restored.enabledPasswords(), QStringList({"shared", "SHARED"}));
+        QCOMPARE(restored.lists()[2].entries, QStringList({"shared", "shared"}));
+    }
+    void reimportKeepsNotesAndDoesNotCreateAnotherList() {
+        QTemporaryDir temp; ArchiveController controller(nullptr, temp.filePath("library.dat"));
+        const auto input = temp.filePath("source.txt"); QVERIFY(Write(input, "one\ntwo\none\n"));
+        QVERIFY(controller.importPasswordList(input)); const auto id = controller.passwordLibrary().lists()[0].id;
+        const QHash<QString, QString> notes{{"one", "remember this source"}};
+        QVERIFY(controller.editPasswordList(id, "source", "one\ntwo", &notes));
+        QVERIFY(controller.setPasswordListEnabled(id, false));
+        QVERIFY(Write(input, "two\none\ntwo\n")); QVERIFY(controller.importPasswordList(input));
+        QCOMPARE(controller.passwordLibrary().lists().size(), 1); QCOMPARE(controller.passwordLibrary().lists()[0].id, id);
+        QVERIFY(controller.passwordLibrary().lists()[0].enabled);
+        QCOMPARE(controller.passwordLibrary().lists()[0].comments, notes);
+        QVERIFY(controller.importPasswordList(input)); QCOMPARE(controller.passwordLibrary().lists().size(), 1);
+        QVERIFY(Write(input, "one\nthree\n")); QVERIFY(controller.importPasswordList(input));
+        QCOMPARE(controller.passwordLibrary().uniquePasswords().size(), 3);
+    }
     void enabledOrderingAndDeduplication() {
         QList<PasswordList> lists{{"a", "first", true, {"duplicate", "shared", "right"}},
                                  {"b", "second", true, {"shared", "other"}}, {"c", "disabled", false, {"disabled-password"}}};

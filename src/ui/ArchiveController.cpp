@@ -125,6 +125,17 @@ bool ArchiveController::importPasswordList(const QString& path) {
     if (busy()) { setStatus(QStringLiteral("任务结束后可导入密码单")); return false; }
     QString text, error;
     if (!PasswordLibrary::readTextFile(path, text, error)) { setStatus(error); return false; }
+    QStringList entries;
+    if (!PasswordLibrary::parse(text, entries, error)) { setStatus(error); return false; }
+    auto title = QFileInfo(path).completeBaseName().trimmed();
+    if (title.isEmpty()) title = QStringLiteral("常用密码");
+    const QSet<QString> imported(entries.cbegin(), entries.cend());
+    for (const auto& list : passwords_.lists()) {
+        if (list.name != title || QSet<QString>(list.entries.cbegin(), list.entries.cend()) != imported) continue;
+        const auto id = list.id;
+        if (!list.enabled && !setPasswordListEnabled(id, true)) return false;
+        setStatus(QStringLiteral("密码单已存在，已保留原有注释并启用，未重复添加")); return true;
+    }
     return addPasswordList(QFileInfo(path).completeBaseName(), text);
 }
 bool ArchiveController::editPasswordList(const QString& id, const QString& name, const QString& text, const QHash<QString, QString>* comments) {

@@ -174,11 +174,24 @@ int PasswordLibrary::enabledCount() const {
     return enabledLists_;
 }
 void PasswordLibrary::rebuildEnabled() {
-    enabled_.clear(); enabledLists_ = 0; QSet<QString> seen;
-    for (const auto& list : lists_) if (list.enabled) {
-        ++enabledLists_;
+    enabled_.clear(); unique_.clear(); enabledLists_ = 0;
+    QSet<QString> enabledSeen;
+    QHash<QString, qsizetype> positions;
+    for (const auto& list : lists_) {
+        if (list.enabled) ++enabledLists_;
+        QSet<QString> listSeen;
         for (const auto& password : list.entries) {
-            if (!seen.contains(password)) { seen.insert(password); enabled_.append(password); }
+            if (listSeen.contains(password)) continue;
+            listSeen.insert(password);
+            auto position = positions.constFind(password);
+            if (position == positions.cend()) {
+                const auto index = unique_.size(); positions.insert(password, index);
+                unique_.append({password, {}, false}); position = positions.constFind(password);
+            }
+            auto& entry = unique_[position.value()];
+            entry.sources.append({list.id, list.name, list.comments.value(password), list.enabled});
+            entry.enabled |= list.enabled;
+            if (list.enabled && !enabledSeen.contains(password)) { enabledSeen.insert(password); enabled_.append(password); }
         }
     }
 }

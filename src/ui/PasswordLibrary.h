@@ -11,6 +11,16 @@ struct PasswordList {
     QHash<QString, QString> comments;
 };
 
+struct PasswordSource {
+    QString listId, name, comment;
+    bool enabled = true;
+};
+struct PasswordEntry {
+    QString value;
+    QList<PasswordSource> sources;
+    bool enabled = false;
+};
+
 class PasswordLibrary {
 public:
     explicit PasswordLibrary(QString path = {});
@@ -21,6 +31,7 @@ public:
     bool readable() const { return readable_; }
     int enabledCount() const;
     const QStringList& enabledPasswords() const { return enabled_; }
+    const QList<PasswordEntry>& uniquePasswords() const { return unique_; }
 
     static bool parse(const QString& text, QStringList& entries, QString& error);
     static bool readTextFile(const QString& path, QString& text, QString& error);
@@ -30,6 +41,7 @@ private:
     QList<PasswordList> lists_;
     bool readable_ = true;
     QStringList enabled_;
+    QList<PasswordEntry> unique_;
     int enabledLists_ = 0;
     void rebuildEnabled();
 };

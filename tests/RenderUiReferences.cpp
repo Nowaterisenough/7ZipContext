@@ -30,7 +30,8 @@ int main(int argc, char** argv) {
     ArchiveController controller(nullptr, temporary.filePath("password-lists.dat"));
     const QHash<QString, QString> notes{{"preview-example-one", QStringLiteral("示例：下载分卷的解压密码")}, {"preview-example-two", QStringLiteral("示例：备用密码")}};
     if (!controller.addPasswordList(QStringLiteral("常用密码"), "preview-example-one\npreview-example-two", &notes)) return 8;
-    if (!controller.addPasswordList(QStringLiteral("工作资料"), "preview-example-three")) return 8;
+    const QHash<QString, QString> extraNotes{{"preview-example-one", QStringLiteral("同一密码的另一份来源")}};
+    if (!controller.addPasswordList(QStringLiteral("工作资料"), "preview-example-one\npreview-example-three", &extraNotes)) return 8;
     controller.rememberGeometry = false;
     controller.addPaths({source.fileName()}, true);
     controller.archiveName = QStringLiteral("工作资料备份");

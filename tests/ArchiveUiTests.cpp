@@ -298,6 +298,32 @@ private slots:
         QString error; PasswordLibrary restored(temporary.filePath("library.dat")); QVERIFY(restored.load(error));
         QCOMPARE(restored.lists().size(), 1); QCOMPARE(restored.lists()[0].name, QStringLiteral("备用"));
     }
+    void sharedPasswordsAppearOnceAndKeepEachSourceManageable() {
+        QTemporaryDir temp; ArchiveController controller(nullptr, temp.filePath("library.dat")); controller.rememberGeometry = false;
+        const QHash<QString, QString> firstNotes{{"shared-code", "first-source-note"}};
+        const QHash<QString, QString> secondNotes{{"shared-code", "second-source-note"}};
+        QVERIFY(controller.addPasswordList("source A", "shared-code\nonly-a", &firstNotes));
+        QVERIFY(controller.addPasswordList("source B", "shared-code\nonly-b", &secondNotes));
+        const auto secondId = controller.passwordLibrary().lists()[1].id;
+        QVERIFY(controller.setPasswordListEnabled(secondId, false));
+        ArchiveWindow main(controller), popup(controller, true); main.show(); main.navigate("passwords"); QTest::qWait(30);
+        auto* list = main.findChild<QListWidget*>("passwordLists"); auto* trayList = popup.findChild<QListWidget*>("passwordLists");
+        QCOMPARE(list->count(), 3); QCOMPARE(trayList->count(), 3); QCOMPARE(list->item(0)->text(), QStringLiteral("shared-code"));
+        QVERIFY(list->item(0)->toolTip().contains("first-source-note")); QVERIFY(list->item(0)->toolTip().contains("second-source-note"));
+        auto* sources = main.findChild<QComboBox*>("passwordListSource"); QVERIFY(sources && sources->isVisible()); QCOMPARE(sources->count(), 2);
+        auto* search = main.findChild<QLineEdit*>("searchSettings"); search->setText("second-source-note");
+        QVERIFY(!list->item(0)->isHidden()); QVERIFY(list->item(1)->isHidden()); QVERIFY(list->item(2)->isHidden());
+        search->setText("no-match"); QCOMPARE(list->currentRow(), -1); QVERIFY(!main.findChild<QPushButton*>("removePasswords")->isEnabled());
+        search->clear(); QCOMPARE(list->currentRow(), 0);
+        sources->setCurrentIndex(sources->findData(secondId));
+        QCOMPARE(main.findChild<QPushButton*>("togglePasswords")->text(), QStringLiteral("启用密码单"));
+        QTest::mouseClick(main.findChild<QPushButton*>("togglePasswords"), Qt::LeftButton);
+        QCOMPARE(controller.passwordLibrary().enabledCount(), 2); QCOMPARE(sources->currentData().toString(), secondId);
+        QTest::mouseClick(main.findChild<QPushButton*>("removePasswords"), Qt::LeftButton);
+        QCOMPARE(list->count(), 2); QCOMPARE(trayList->count(), 2); QCOMPARE(list->currentItem()->text(), QStringLiteral("shared-code"));
+        QVERIFY(!sources->isVisible()); QCOMPARE(controller.passwordLibrary().lists()[0].comments, firstNotes);
+        QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"shared-code", "only-a"})); QVERIFY(!popup.isVisible());
+    }
     void updateControlsSynchronizeAndAreSearchable() {
         QTemporaryDir temporary;
         ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
