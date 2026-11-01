@@ -62,6 +62,7 @@ private:
     void editPasswords(bool existing);
     QString selectedPasswordList() const;
     void syncPasswordActions();
+    void syncUpdates();
 
     ArchiveController& controller_;
     bool compact_, dialogOpen_ = false, synchronizing_ = false;
@@ -89,4 +90,7 @@ private:
     desktop::ToggleSwitch* autoPasswords_ = nullptr;
     desktop::ToggleSwitch* organizeMedia_ = nullptr;
     QPushButton* correctName_ = nullptr;
+    QLabel *updateStatus_ = nullptr, *updateNotes_ = nullptr;
+    QPushButton *checkUpdate_ = nullptr, *downloadUpdate_ = nullptr, *installUpdate_ = nullptr, *cancelUpdate_ = nullptr;
+    desktop::ToggleSwitch* autoUpdate_ = nullptr;
 };

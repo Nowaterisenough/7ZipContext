@@ -298,6 +298,26 @@ private slots:
         QString error; PasswordLibrary restored(temporary.filePath("library.dat")); QVERIFY(restored.load(error));
         QCOMPARE(restored.lists().size(), 1); QCOMPARE(restored.lists()[0].name, QStringLiteral("备用"));
     }
+    void updateControlsSynchronizeAndAreSearchable() {
+        QTemporaryDir temporary;
+        ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
+        ArchiveWindow main(controller), popup(controller, true);
+        main.show(); main.navigate("about");
+        auto* automatic = main.findChild<QAbstractButton*>("autoCheckUpdates"); QVERIFY(automatic);
+        const auto previous = automatic->isChecked();
+        QTest::mouseClick(automatic, Qt::LeftButton);
+        QCOMPARE(controller.updates().autoCheck(), !previous);
+        QCOMPARE(popup.findChild<QAbstractButton*>("autoCheckUpdates")->isChecked(), !previous);
+        QTest::mouseClick(automatic, Qt::LeftButton);
+        QVERIFY(main.findChild<QPushButton*>("checkUpdate")->isEnabled());
+        QVERIFY(!main.findChild<QPushButton*>("installUpdate")->isVisible());
+        auto* search = main.findChild<QLineEdit*>("searchSettings"); search->setText(QStringLiteral("在线更新"));
+        QVERIFY(main.findChild<QPushButton*>("checkUpdate")->isVisible());
+        QVERIFY(!main.pageWidget(4)->findChild<QLabel*>("settingsNoResults")->isVisible());
+        search->setText("no-such-setting"); QVERIFY(!main.findChild<QPushButton*>("checkUpdate")->isVisible());
+        QVERIFY(main.pageWidget(4)->findChild<QLabel*>("settingsNoResults")->isVisible());
+        QVERIFY(!popup.isVisible());
+    }
     void realOperationsDragDropAndSnapshots() {
         QTemporaryDir temp; QVERIFY(temp.isValid());
         const QString source = temp.filePath(QStringLiteral("工作资料.txt"));

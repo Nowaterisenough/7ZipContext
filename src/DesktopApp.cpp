@@ -1,4 +1,5 @@
 #include "ui/ArchiveWindow.h"
+#include "AppBuild.h"
 #include <QApplication>
 #include <QDir>
 #include <QJsonArray>
@@ -19,6 +20,7 @@
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("7ZipContext"));
+    app.setApplicationVersion(QString::fromLatin1(appbuild::Version));
     app.setOrganizationName(QStringLiteral("7ZipContext"));
     app.setQuitOnLastWindowClosed(false);
     ApplyArchiveTheme(app);
@@ -193,6 +195,10 @@ int main(int argc, char** argv) {
     });
     tray.show();
     dispatch(arguments);
+    QTimer::singleShot(4000, &controller.updates(), [&controller] {
+        auto& updates = controller.updates();
+        if (updates.autoCheck() && updates.state() == UpdateManager::State::Idle) updates.check();
+    });
     const int result = app.exec();
     tray.hide();
     return result;

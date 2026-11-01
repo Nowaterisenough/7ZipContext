@@ -11,6 +11,7 @@
 #include "SevenZipCore.h"
 #include "PasswordLibrary.h"
 #include "InputDiscovery.h"
+#include "UpdateManager.h"
 
 struct ArchiveTask {
     QString name;
@@ -52,6 +53,8 @@ public:
     bool editPasswordList(const QString& id, const QString& name, const QString& text, const QHash<QString, QString>* comments = nullptr);
     bool setPasswordListEnabled(const QString& id, bool enabled);
     bool removePasswordList(const QString& id);
+    UpdateManager& updates() { return updates_; }
+    bool installUpdate();
     int passwordAttempt() const { return passwordAttempt_; }
     int passwordTotal() const { return passwordTotal_; }
     bool matchingPassword() const { return phase_ == Phase::Passwords; }
@@ -116,6 +119,7 @@ private:
     std::atomic<Phase> phase_{Phase::Idle};
     std::atomic<int> passwordAttempt_{0}, passwordTotal_{0};
     PasswordLibrary passwords_;
+    UpdateManager updates_;
     QString passwordError_;
     QHash<QString, QString> passwordMatches_;
     bool busy_ = false, quitAfterJob_ = false;

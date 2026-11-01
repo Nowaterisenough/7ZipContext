@@ -304,12 +304,13 @@ ArchiveWindow::ArchiveWindow(ArchiveController& controller, bool compact) : cont
     connect(&controller_, &ArchiveController::busyChanged, this, &ArchiveWindow::syncBusy);
     connect(&controller_, &ArchiveController::progressChanged, this, &ArchiveWindow::syncProgress);
     connect(&controller_, &ArchiveController::passwordsChanged, this, &ArchiveWindow::refreshPasswords);
+    connect(&controller_.updates(), &UpdateManager::changed, this, &ArchiveWindow::syncUpdates);
     connect(&controller_, &ArchiveController::statusChanged, status_, &QLabel::setText);
     auto* open = new QShortcut(QKeySequence::Open, this);
     connect(open, &QShortcut::activated, this, [this] { if (page_ == "extract" || page_ == "compress") pickFiles(); });
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(escape, &QShortcut::activated, this, &QWidget::hide);
-    refreshQueues(); refreshTasks(); refreshPasswords(); syncOptions(); syncBusy(); syncProgress(); navigate(QStringLiteral("extract"));
+    refreshQueues(); refreshTasks(); refreshPasswords(); syncOptions(); syncBusy(); syncProgress(); syncUpdates(); navigate(QStringLiteral("extract"));
     setFocus(Qt::OtherFocusReason);
     if (compact_) { setMinimumWidth(440); resize(480, 700); }
     else {
@@ -650,7 +651,7 @@ QWidget* ArchiveWindow::makeSettingsPage(bool about) {
     QVBoxLayout* layout; auto* page = Page(layout, about ? "aboutPage" : "settingsPage");
     auto* card = Card();
     if (about) {
-        Row(card, QStringLiteral("7-Zip Context"), QStringLiteral("压缩、解压与托盘工作台"), Label(QStringLiteral("桌面版"), true));
+        Row(card, QStringLiteral("7-Zip Context"), QStringLiteral("压缩、解压与托盘工作台"), Label('v' + controller_.updates().currentVersion(), true));
         Row(card, QStringLiteral("压缩引擎"), QStringLiteral("本地处理文件，无需上传"), Label(QStringLiteral("7-Zip"), true));
         Row(card, QStringLiteral("支持压缩"), QStringLiteral("密码加密和自定义分卷"), Label(QStringLiteral("7z / ZIP"), true));
         Row(card, QStringLiteral("智能识别"), QStringLiteral("读取文件头识别格式，定位首卷并纠正扩展名"), Label(QStringLiteral("已启用"), true));
@@ -670,6 +671,26 @@ QWidget* ArchiveWindow::makeSettingsPage(bool about) {
         connect(rememberGeometry_, &QAbstractButton::toggled, this, [this](bool enabled) { controller_.rememberGeometry = enabled; controller_.savePreferences(); controller_.notifyOptions(); });
     }
     layout->addWidget(card);
+    if (about) {
+        auto* updates = Card(); auto* body = static_cast<QVBoxLayout*>(updates->layout());
+        updates->setProperty("searchableCard", true); updates->setProperty("searchText", QStringLiteral("在线更新 检查更新 下载更新 安装并重启 启动时自动检查更新"));
+        body->setContentsMargins(16, 14, 16, 14); body->setSpacing(12);
+        body->addWidget(Label(QStringLiteral("在线更新"), false, true));
+        updateStatus_ = Label({}, true); updateStatus_->setObjectName("updateStatus"); updateStatus_->setWordWrap(true); body->addWidget(updateStatus_);
+        auto* buttons = new QHBoxLayout;
+        checkUpdate_ = Button(QStringLiteral("检查更新"), "checkUpdate"); downloadUpdate_ = Button(QStringLiteral("下载更新"), "downloadUpdate");
+        installUpdate_ = Button(QStringLiteral("安装并重启"), "installUpdate", true); cancelUpdate_ = Button(QStringLiteral("取消"), "cancelUpdate");
+        buttons->addWidget(checkUpdate_); buttons->addWidget(downloadUpdate_); buttons->addWidget(installUpdate_); buttons->addWidget(cancelUpdate_); buttons->addStretch(); body->addLayout(buttons);
+        updateNotes_ = Label({}, true); updateNotes_->setObjectName("updateNotes"); updateNotes_->setTextFormat(Qt::PlainText); updateNotes_->setWordWrap(true); body->addWidget(updateNotes_);
+        auto* automatic = new QHBoxLayout; automatic->addWidget(Label(QStringLiteral("启动时自动检查更新"))); automatic->addStretch();
+        autoUpdate_ = new desktop::ToggleSwitch; autoUpdate_->setObjectName("autoCheckUpdates"); autoUpdate_->setAccessibleName(QStringLiteral("启动时自动检查更新")); automatic->addWidget(autoUpdate_); body->addLayout(automatic);
+        layout->addWidget(updates);
+        connect(checkUpdate_, &QPushButton::clicked, &controller_.updates(), &UpdateManager::check);
+        connect(downloadUpdate_, &QPushButton::clicked, &controller_.updates(), &UpdateManager::download);
+        connect(cancelUpdate_, &QPushButton::clicked, &controller_.updates(), &UpdateManager::cancel);
+        connect(installUpdate_, &QPushButton::clicked, &controller_, &ArchiveController::installUpdate);
+        connect(autoUpdate_, &QAbstractButton::toggled, &controller_.updates(), &UpdateManager::setAutoCheck);
+    }
     if (!about) {
         auto* actions = new QHBoxLayout; auto* note = Label(QStringLiteral("关闭主窗口后保留托盘"), true); note->setWordWrap(true);
         actions->addWidget(note, 1); auto* quit = Button(QStringLiteral("退出应用"), "quitApplication"); actions->addWidget(quit); layout->addLayout(actions);
@@ -773,7 +794,20 @@ void ArchiveWindow::syncBusy() {
     correctName_->setEnabled(!controller_.busy() && archives_->currentRow() >= 0 && static_cast<size_t>(archives_->currentRow()) < controller_.archives.size());
     shell_->refresh->setEnabled(!controller_.busy()); syncProgress();
     syncPasswordActions();
+    syncUpdates();
     status_->setVisible(controller_.busy() || (page_ != "general" && page_ != "about"));
+}
+void ArchiveWindow::syncUpdates() {
+    if (!updateStatus_) return;
+    auto& update = controller_.updates();
+    updateStatus_->setText(update.status()); updateNotes_->setText(update.release().notes); updateNotes_->setVisible(!update.release().notes.isEmpty());
+    checkUpdate_->setEnabled(!update.busy());
+    downloadUpdate_->setVisible(update.state() == UpdateManager::State::Available);
+    installUpdate_->setVisible(update.state() == UpdateManager::State::Ready);
+    installUpdate_->setEnabled(!controller_.busy());
+    installUpdate_->setToolTip(controller_.busy() ? QStringLiteral("当前任务结束后可以安装更新") : QStringLiteral("安装时关闭程序，完成后重新启动"));
+    cancelUpdate_->setVisible(update.state() == UpdateManager::State::Checking || update.state() == UpdateManager::State::Downloading);
+    autoUpdate_->SyncChecked(update.autoCheck());
 }
 void ArchiveWindow::syncProgress() {
     const auto total = controller_.total(), completed = controller_.completed();

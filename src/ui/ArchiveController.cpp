@@ -28,7 +28,7 @@ QString ArchiveKey(const std::wstring& path) {
 }
 }
 
-ArchiveController::ArchiveController(QObject *parent, const QString& passwordStoragePath) : QObject(parent), passwords_(passwordStoragePath) {
+ArchiveController::ArchiveController(QObject *parent, const QString& passwordStoragePath) : QObject(parent), passwords_(passwordStoragePath), updates_(this) {
     QSettings preferences(PreferencesFile(), QSettings::IniFormat);
     // Earlier versions saved auto-hide as a default, including when unrelated settings changed.
     hideOnBlur = preferences.value("Window/TrayAutoHide", false).toBool();
@@ -80,6 +80,12 @@ void ArchiveController::setStatus(const QString& text) {
     status_ = text; emit statusChanged(text);
 }
 void ArchiveController::notifyOptions() { emit optionsChanged(); }
+bool ArchiveController::installUpdate() {
+    if (busy()) { setStatus(QStringLiteral("请等待当前任务结束后再安装更新")); return false; }
+    QString error;
+    if (!updates_.install(error)) { setStatus(error); return false; }
+    emit quitReady(); return true;
+}
 void ArchiveController::savePreferences() {
     QSettings preferences(PreferencesFile(), QSettings::IniFormat);
     preferences.setValue("Window/TrayAutoHide", hideOnBlur);

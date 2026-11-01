@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(7ZipContext LANGUAGES C CXX)
+enable_language(RC)
+include(cmake/AppVersion.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -300,12 +302,13 @@ qt_add_library(ArchiveUi STATIC
     src/ui/ArchiveCleanup.cpp src/ui/ArchiveCleanup.h
     src/ui/MediaOrganizer.cpp src/ui/MediaOrganizer.h
     src/ui/InputDiscovery.cpp src/ui/InputDiscovery.h
+    src/ui/UpdateManager.cpp src/ui/UpdateManager.h
     src/ui/theme/dark_style.cpp src/ui/theme/dark_style.h
 )
 set_target_properties(ArchiveUi PROPERTIES AUTOMOC ON)
-target_include_directories(ArchiveUi PUBLIC src)
-target_link_libraries(ArchiveUi PUBLIC Qt6::Widgets Qt6::Svg Qt6::Network dwmapi crypt32)
-qt_add_executable(7ZipContextApp WIN32 src/DesktopApp.cpp)
+target_include_directories(ArchiveUi PUBLIC src "${CMAKE_BINARY_DIR}/generated")
+target_link_libraries(ArchiveUi PUBLIC Qt6::Widgets Qt6::Svg Qt6::Network dwmapi crypt32 msi)
+qt_add_executable(7ZipContextApp WIN32 src/DesktopApp.cpp "${CMAKE_BINARY_DIR}/generated/AppVersion.rc")
 target_link_libraries(7ZipContextApp PRIVATE ArchiveUi SevenZipEngine Qt6::Network)
 
 foreach(target SevenZipEngine 7ZipContext ArchiveUi 7ZipContextApp)
@@ -390,6 +393,19 @@ if(BUILD_TESTING)
     add_test(NAME mixed_input COMMAND ${CMAKE_COMMAND}
         -DTEST_EXECUTABLE=$<TARGET_FILE:InputDiscoveryTests> -DTEST_LOG=input-tests.log
         -P ${CMAKE_SOURCE_DIR}/tests/RunUiTests.cmake)
+    qt_add_executable(UpdateTests tests/UpdateTests.cpp)
+    set_target_properties(UpdateTests PROPERTIES AUTOMOC ON WIN32_EXECUTABLE FALSE)
+    target_link_libraries(UpdateTests PRIVATE ArchiveUi SevenZipEngine Qt6::Test)
+    if(MSVC)
+        target_compile_options(UpdateTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME online_updates COMMAND ${CMAKE_COMMAND}
+        -DTEST_EXECUTABLE=$<TARGET_FILE:UpdateTests> -DTEST_LOG=update-tests.log
+        -P ${CMAKE_SOURCE_DIR}/tests/RunUiTests.cmake)
+    add_executable(UpdateSmokeFailure WIN32 tests/UpdateSmokeFailure.cpp "${CMAKE_BINARY_DIR}/generated/AppVersion.rc")
+    if(MINGW)
+        target_link_options(UpdateSmokeFailure PRIVATE -static)
+    endif()
     add_executable(VisualReferenceProbe EXCLUDE_FROM_ALL tests/VisualReferenceProbe.cpp)
     target_include_directories(VisualReferenceProbe PRIVATE src)
     target_link_libraries(VisualReferenceProbe PRIVATE Qt6::Widgets)
@@ -407,6 +423,7 @@ endif()
 set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/install" CACHE PATH "Install path" FORCE)
 install(TARGETS 7ZipContext 7ZipContextApp RUNTIME DESTINATION . LIBRARY DESTINATION .)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION .)
+install(FILES scripts/Apply-Update.ps1 DESTINATION .)
 install(FILES Package/AppxManifest.xml DESTINATION .)
 install(DIRECTORY Package/Assets DESTINATION .)
 install(DIRECTORY licenses DESTINATION .)

@@ -64,5 +64,16 @@ int main(int argc, char** argv) {
     if (!metadata.open(QIODevice::WriteOnly)) return 7;
     metadata.write(QJsonDocument(QJsonObject{{"platform", QGuiApplication::platformName()}, {"qt", qVersion()},
         {"resolvedFont", QFontInfo(app.font()).family()}, {"logicalDpi", app.primaryScreen()->logicalDotsPerInch()}, {"captures", captures}}).toJson());
+    if (qEnvironmentVariableIsSet("ARCHIVE_CHECK_UPDATES")) {
+        auto& updates = controller.updates(); updates.check(); timeout.restart();
+        while (updates.busy() && timeout.elapsed() < 45000) { app.processEvents(); QThread::msleep(5); }
+        const bool timedOut = updates.busy();
+        if (timedOut) updates.cancel();
+        QFile report(output + "/online-check.json"); if (!report.open(QIODevice::WriteOnly)) return 9;
+        report.write(QJsonDocument(QJsonObject{{"currentVersion", updates.currentVersion()}, {"latestVersion", updates.release().version},
+            {"status", updates.status()}, {"timedOut", timedOut}, {"state", static_cast<int>(updates.state())},
+            {"packageAvailable", !updates.release().package.isEmpty()}, {"checksumsAvailable", !updates.release().checksums.isEmpty()}}).toJson());
+        if (timedOut || updates.state() == UpdateManager::State::Error) return 10;
+    }
     return 0;
 }
