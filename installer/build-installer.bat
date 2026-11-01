@@ -25,12 +25,13 @@ if "%ISCC%"=="" (
     exit /b 1
 )
 
-:: Check if DLL exists
-if not exist "..\build\RelWithDebInfo\7ZipContext.dll" (
-    echo [ERROR] 7ZipContext.dll not found!
+:: CMake install deploys the application and its matching Qt runtime.
+if not exist "..\build\install\7ZipContextApp.exe" (
+    echo [ERROR] Installed desktop application not found!
     echo.
     echo Please build the project first:
     echo   cmake --build build --config RelWithDebInfo
+    echo   cmake --install build --config RelWithDebInfo
     echo.
     pause
     exit /b 1

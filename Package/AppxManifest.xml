@@ -32,14 +32,14 @@
   </Resources>
 
   <Applications>
-    <Application Id="App" Executable="dummy.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="App" Executable="7ZipContextApp.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="7-Zip Context"
         Description="7-Zip Context for Windows 11"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\icon.png"
         Square44x44Logo="Assets\icon.png"
-        AppListEntry="none" />
+        AppListEntry="default" />
 
       <Extensions>
         <!-- COM Server registration -->

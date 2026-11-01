@@ -28,17 +28,6 @@ struct LocalizedStrings {
     const wchar_t* extractTo;
     const wchar_t* addTo7z;
     const wchar_t* addToZip;
-    const wchar_t* overwriteTitle;
-    const wchar_t* overwriteMessage;
-    const wchar_t* passwordTitle;
-    const wchar_t* passwordMessage;
-    const wchar_t* passwordPromptTitle;
-    const wchar_t* passwordPromptMessage;
-    const wchar_t* passwordWrongTitle;
-    const wchar_t* passwordWrongMessage;
-    const wchar_t* progressExtracting;
-    const wchar_t* progressCompressing;
-    const wchar_t* progressCancel;
 };
 
 // Get system language and return appropriate strings
@@ -89,8 +78,6 @@ private:
     void InitSubCommands();
     void GetSelectedItems(IShellItemArray* psiItemArray);
     bool IsArchiveFile(const std::wstring& path);
-    bool ExtractArchive(const std::wstring& archivePath, const std::wstring& outDir);
-    bool CompressFiles(const std::vector<std::wstring>& srcPaths, const std::wstring& archivePath, const GUID& formatId);
 };
 
 // Class factory

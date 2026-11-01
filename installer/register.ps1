@@ -43,6 +43,10 @@ if (-not (Test-Path $DllFile)) {
     throw "7ZipContext.dll not found"
 }
 Write-Log "DLL verified: $DllFile"
+$DesktopFile = Join-Path $InstallDir "7ZipContextApp.exe"
+if (-not (Test-Path -LiteralPath $DesktopFile)) {
+    throw "7ZipContextApp.exe not found"
+}
 
 if (-not (Test-Path $ManifestFile)) {
     Write-Log "ERROR: Manifest not found at $ManifestFile"

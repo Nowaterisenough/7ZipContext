@@ -37,11 +37,10 @@ $CertName = "7ZipContext"
 $CertFile = Join-Path $InstallDir "$CertName.pfx"
 $CertPassword = "7zip"
 
-Write-Host "[1/5] Creating dummy executable..." -ForegroundColor Cyan
-$dummyExe = Join-Path $InstallDir "dummy.exe"
-if (-not (Test-Path $dummyExe)) {
-    # Minimal valid PE header
-    [System.IO.File]::WriteAllBytes($dummyExe, [byte[]](0x4D, 0x5A))
+Write-Host "[1/5] Checking desktop application..." -ForegroundColor Cyan
+$desktopExe = Join-Path $InstallDir "7ZipContextApp.exe"
+if (-not (Test-Path -LiteralPath $desktopExe)) {
+    throw "7ZipContextApp.exe not found. Build and install both targets first."
 }
 Write-Host "  Done."
 

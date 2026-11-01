@@ -1,9 +1,17 @@
 // SevenZipCore.cpp - 7-Zip functionality wrapper implementation
 #include "SevenZipCore.h"
+#include "ArchivePlan.h"
+#include "WindowsPath.h"
 
 #include <Windows.h>
 #include <PropIdl.h>
 #include <shlwapi.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <array>
+#include <limits>
 
 // 7-Zip headers (GUIDs are instantiated in GuidInit.cpp)
 #include "Common/Common.h"
@@ -46,6 +54,10 @@ static const GUID CLSID_CFormatIso =
 // {23170F69-40C1-278A-1000-000110080000} - Cab
 static const GUID CLSID_CFormatCab =
     { 0x23170F69, 0x40C1, 0x278A, { 0x10, 0x00, 0x00, 0x01, 0x10, 0x08, 0x00, 0x00 } };
+static const GUID CLSID_CFormatRar5 =
+    { 0x23170F69, 0x40C1, 0x278A, { 0x10, 0x00, 0x00, 0x01, 0x10, 0xcc, 0x00, 0x00 } };
+static const GUID CLSID_CFormatXz =
+    { 0x23170F69, 0x40C1, 0x278A, { 0x10, 0x00, 0x00, 0x01, 0x10, 0x0c, 0x00, 0x00 } };
 
 // External function from 7-Zip to create archive objects
 STDAPI CreateObject(const GUID *clsid, const GUID *iid, void **outObject);
@@ -54,7 +66,8 @@ STDAPI CreateObject(const GUID *clsid, const GUID *iid, void **outObject);
 // Helper: Create directory recursively
 //////////////////////////////////////////////////////////////////////////////
 
-static void CreateDirectoryRecursive(const std::wstring& path) {
+static void CreateDirectoryRecursive(const std::wstring& input) {
+    const auto path = NativePath(input);
     size_t pos = 0;
     while ((pos = path.find(L'\\', pos + 1)) != std::wstring::npos) {
         CreateDirectoryW(path.substr(0, pos).c_str(), NULL);
@@ -83,7 +96,7 @@ public:
             CreateDirectoryRecursive(dir);
         }
 
-        m_hFile = CreateFileW(path, GENERIC_WRITE, 0, NULL,
+        m_hFile = CreateFileW(NativePath(path).c_str(), GENERIC_WRITE, 0, NULL,
                               createAlways ? CREATE_ALWAYS : CREATE_NEW,
                               FILE_ATTRIBUTE_NORMAL, NULL);
         return m_hFile != INVALID_HANDLE_VALUE;
@@ -97,7 +110,7 @@ public:
     }
 
     // IUnknown
-    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) {
+    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
         if (iid == IID_IUnknown || iid == IID_ISequentialOutStream) {
             *outObject = this;
             AddRef();
@@ -107,14 +120,14 @@ public:
         return E_NOINTERFACE;
     }
 
-    STDMETHOD_(ULONG, AddRef)() { return ++m_refCount; }
-    STDMETHOD_(ULONG, Release)() {
+    STDMETHOD_(ULONG, AddRef)() noexcept { return ++m_refCount; }
+    STDMETHOD_(ULONG, Release)() noexcept {
         ULONG res = --m_refCount;
         if (res == 0) delete this;
         return res;
     }
 
-    STDMETHOD(Write)(const void *data, UInt32 size, UInt32 *processedSize) {
+    STDMETHOD(Write)(const void *data, UInt32 size, UInt32 *processedSize) noexcept {
         DWORD written = 0;
         if (!WriteFile(m_hFile, data, size, &written, NULL)) {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -151,9 +164,11 @@ public:
     {}
 
     bool WasPasswordRequested() const { return m_passwordWasRequested; }
+    bool Succeeded() const { return m_success; }
+    const std::wstring& OutputError() const { return m_outputError; }
 
     // IUnknown
-    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) {
+    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
         if (iid == IID_IUnknown) {
             *outObject = static_cast<IArchiveExtractCallback*>(this);
         } else if (iid == IID_IArchiveExtractCallback) {
@@ -168,20 +183,20 @@ public:
         return S_OK;
     }
 
-    STDMETHOD_(ULONG, AddRef)() { return ++m_refCount; }
-    STDMETHOD_(ULONG, Release)() {
+    STDMETHOD_(ULONG, AddRef)() noexcept { return ++m_refCount; }
+    STDMETHOD_(ULONG, Release)() noexcept {
         ULONG res = --m_refCount;
         if (res == 0) delete this;
         return res;
     }
 
     // IProgress
-    STDMETHOD(SetTotal)(UInt64 total) {
+    STDMETHOD(SetTotal)(UInt64 total) noexcept {
         m_total = total;
         return S_OK;
     }
 
-    STDMETHOD(SetCompleted)(const UInt64 *completeValue) {
+    STDMETHOD(SetCompleted)(const UInt64 *completeValue) noexcept {
         if (completeValue) {
             m_completed = *completeValue;
             if (m_progress && !m_progress(m_completed, m_total)) {
@@ -192,7 +207,7 @@ public:
     }
 
     // IArchiveExtractCallback
-    STDMETHOD(GetStream)(UInt32 index, ISequentialOutStream **outStream, Int32 askExtractMode) {
+    STDMETHOD(GetStream)(UInt32 index, ISequentialOutStream **outStream, Int32 askExtractMode) noexcept {
         *outStream = NULL;
         if (askExtractMode != NArchive::NExtract::NAskMode::kExtract) {
             return S_OK;
@@ -204,6 +219,25 @@ public:
         m_archive->GetProperty(index, kpidPath, &prop);
         std::wstring itemPath = (prop.vt == VT_BSTR) ? prop.bstrVal : L"";
         PropVariantClear(&prop);
+        if (itemPath.empty()) itemPath = L"content";
+        std::replace(itemPath.begin(), itemPath.end(), L'/', L'\\');
+        while (itemPath.size() > 1 && itemPath.back() == L'\\') itemPath.pop_back();
+        std::filesystem::path relative(itemPath);
+        if (relative.is_absolute() || relative.has_root_name() || itemPath.find(L':') != std::wstring::npos)
+            return E_ACCESSDENIED;
+        for (const auto& part : relative) {
+            const auto text = part.wstring();
+            if (text == L".") continue;
+            if (text == L".." || text.empty() || text.back() == L'.' || text.back() == L' ')
+                return E_ACCESSDENIED;
+            auto base = text.substr(0, text.find(L'.'));
+            std::transform(base.begin(), base.end(), base.begin(), towupper);
+            if (base == L"CON" || base == L"PRN" || base == L"AUX" || base == L"NUL" ||
+                (base.size() == 4 && (base.substr(0, 3) == L"COM" || base.substr(0, 3) == L"LPT") &&
+                    (base[3] >= L'1' && base[3] <= L'9')) || text.find_first_of(L"<>\"|?*") != std::wstring::npos)
+                return E_ACCESSDENIED;
+        }
+        itemPath = relative.lexically_normal().wstring();
 
         // Check if directory
         PropVariantInit(&prop);
@@ -216,33 +250,48 @@ public:
             fullPath += L'\\';
         }
         fullPath += itemPath;
+        // Reject existing junctions/symlinks before opening any archive-controlled path.
+        auto current = std::filesystem::path(fullPath);
+        while (!current.empty()) {
+            const auto attrs = GetFileAttributesW(NativePath(current.wstring()).c_str());
+            if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) return E_ACCESSDENIED;
+            const auto parent = current.parent_path();
+            if (parent == current) break;
+            current = parent;
+        }
 
         if (isDir) {
             CreateDirectoryRecursive(fullPath);
-            return S_OK;
+            const auto attributes = GetFileAttributesW(NativePath(fullPath).c_str());
+            if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) return S_OK;
+            m_outputError = L"无法创建输出目录（Windows 错误 " + std::to_wstring(GetLastError()) + L"）";
+            return E_FAIL;
         }
 
         // Create output stream
         CSimpleOutFileStream* stream = new CSimpleOutFileStream();
         stream->AddRef();
-        if (!stream->Create(fullPath.c_str())) {
+        if (!stream->Create(fullPath.c_str(), false)) {
+            const DWORD error = GetLastError();
+            m_outputError = L"无法创建输出文件（Windows 错误 " + std::to_wstring(error) + L"；已有文件不会覆盖）";
             stream->Release();
-            return HRESULT_FROM_WIN32(GetLastError());
+            return HRESULT_FROM_WIN32(error);
         }
         *outStream = stream;
         return S_OK;
     }
 
-    STDMETHOD(PrepareOperation)(Int32 askExtractMode) {
+    STDMETHOD(PrepareOperation)(Int32 askExtractMode) noexcept {
         return S_OK;
     }
 
-    STDMETHOD(SetOperationResult)(Int32 opRes) {
+    STDMETHOD(SetOperationResult)(Int32 opRes) noexcept {
+        if (opRes != NArchive::NExtract::NOperationResult::kOK) m_success = false;
         return S_OK;
     }
 
     // ICryptoGetTextPassword
-    STDMETHOD(CryptoGetTextPassword)(BSTR *password) {
+    STDMETHOD(CryptoGetTextPassword)(BSTR *password) noexcept {
         m_passwordWasRequested = true;
         *password = SysAllocString(m_password.c_str());
         return S_OK;
@@ -256,6 +305,8 @@ private:
     UInt64 m_total;
     UInt64 m_completed;
     bool m_passwordWasRequested;
+    bool m_success = true;
+    std::wstring m_outputError;
     ULONG m_refCount;
 };
 
@@ -272,7 +323,7 @@ public:
     virtual ~CSimpleInFileStream() { Close(); }
 
     bool Open(const wchar_t* path) {
-        m_hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
+        m_hFile = CreateFileW(NativePath(path).c_str(), GENERIC_READ, FILE_SHARE_READ,
                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         return m_hFile != INVALID_HANDLE_VALUE;
     }
@@ -285,7 +336,7 @@ public:
     }
 
     // IUnknown
-    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) {
+    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
         if (iid == IID_IUnknown || iid == IID_ISequentialInStream) {
             *outObject = this;
             AddRef();
@@ -295,14 +346,14 @@ public:
         return E_NOINTERFACE;
     }
 
-    STDMETHOD_(ULONG, AddRef)() { return ++m_refCount; }
-    STDMETHOD_(ULONG, Release)() {
+    STDMETHOD_(ULONG, AddRef)() noexcept { return ++m_refCount; }
+    STDMETHOD_(ULONG, Release)() noexcept {
         ULONG res = --m_refCount;
         if (res == 0) delete this;
         return res;
     }
 
-    STDMETHOD(Read)(void *data, UInt32 size, UInt32 *processedSize) {
+    STDMETHOD(Read)(void *data, UInt32 size, UInt32 *processedSize) noexcept {
         DWORD read = 0;
         if (!ReadFile(m_hFile, data, size, &read, NULL)) {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -329,10 +380,15 @@ public:
     CFullInFileStream() : m_hFile(INVALID_HANDLE_VALUE), m_refCount(0) {}
     virtual ~CFullInFileStream() { Close(); }
 
-    bool Open(const wchar_t* path) {
-        m_hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
+    bool Open(const wchar_t* path, UInt64 base = 0, UInt64 length = 0) {
+        m_hFile = CreateFileW(NativePath(path).c_str(), GENERIC_READ, FILE_SHARE_READ,
                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        return m_hFile != INVALID_HANDLE_VALUE;
+        if (m_hFile == INVALID_HANDLE_VALUE) return false;
+        LARGE_INTEGER actual{};
+        if (!GetFileSizeEx(m_hFile, &actual) || actual.QuadPart < 0 || base > static_cast<UInt64>(actual.QuadPart) ||
+            length > static_cast<UInt64>(actual.QuadPart) - base) { Close(); return false; }
+        m_base = base; m_length = length ? length : static_cast<UInt64>(actual.QuadPart) - base; m_position = 0;
+        return true;
     }
 
     void Close() {
@@ -343,7 +399,7 @@ public:
     }
 
     // IUnknown
-    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) {
+    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
         if (iid == IID_IUnknown) {
             *outObject = static_cast<IInStream*>(this);
             AddRef();
@@ -363,45 +419,48 @@ public:
         return E_NOINTERFACE;
     }
 
-    STDMETHOD_(ULONG, AddRef)() { return ++m_refCount; }
-    STDMETHOD_(ULONG, Release)() {
+    STDMETHOD_(ULONG, AddRef)() noexcept { return ++m_refCount; }
+    STDMETHOD_(ULONG, Release)() noexcept {
         ULONG res = --m_refCount;
         if (res == 0) delete this;
         return res;
     }
 
-    STDMETHOD(Read)(void *data, UInt32 size, UInt32 *processedSize) {
+    STDMETHOD(Read)(void *data, UInt32 size, UInt32 *processedSize) noexcept {
+        if (processedSize) *processedSize = 0;
+        if (m_position >= m_length) return S_OK;
+        LARGE_INTEGER position{}; position.QuadPart = static_cast<Int64>(m_base + m_position);
+        if (!SetFilePointerEx(m_hFile, position, nullptr, FILE_BEGIN)) return HRESULT_FROM_WIN32(GetLastError());
+        size = static_cast<UInt32>(std::min<UInt64>(size, m_length - m_position));
         DWORD read = 0;
         if (!ReadFile(m_hFile, data, size, &read, NULL)) {
             return HRESULT_FROM_WIN32(GetLastError());
         }
         if (processedSize) *processedSize = read;
+        m_position += read;
         return S_OK;
     }
 
-    STDMETHOD(Seek)(Int64 offset, UInt32 seekOrigin, UInt64 *newPosition) {
-        LARGE_INTEGER li;
-        li.QuadPart = offset;
-        LARGE_INTEGER newPos;
-        if (!SetFilePointerEx(m_hFile, li, &newPos, seekOrigin)) {
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-        if (newPosition) *newPosition = newPos.QuadPart;
+    STDMETHOD(Seek)(Int64 offset, UInt32 seekOrigin, UInt64 *newPosition) noexcept {
+        if (seekOrigin > STREAM_SEEK_END) return STG_E_INVALIDFUNCTION;
+        const auto origin = static_cast<Int64>(seekOrigin == STREAM_SEEK_SET ? 0 : seekOrigin == STREAM_SEEK_CUR ? m_position : m_length);
+        if (offset < -origin || (offset > 0 && offset > (std::numeric_limits<Int64>::max)() - origin)) return STG_E_INVALIDFUNCTION;
+        const auto next = static_cast<UInt64>(origin + offset);
+        if (next > static_cast<UInt64>((std::numeric_limits<Int64>::max)()) - m_base) return STG_E_INVALIDFUNCTION;
+        m_position = next;
+        if (newPosition) *newPosition = m_position;
         return S_OK;
     }
 
-    STDMETHOD(GetSize)(UInt64 *size) {
-        LARGE_INTEGER li;
-        if (!GetFileSizeEx(m_hFile, &li)) {
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-        *size = li.QuadPart;
+    STDMETHOD(GetSize)(UInt64 *size) noexcept {
+        *size = m_length;
         return S_OK;
     }
 
 private:
     HANDLE m_hFile;
     ULONG m_refCount;
+    UInt64 m_base = 0, m_length = 0, m_position = 0;
 };
 
 //////////////////////////////////////////////////////////////////////////////
@@ -425,7 +484,7 @@ public:
             CreateDirectoryRecursive(dir);
         }
 
-        m_hFile = CreateFileW(path, GENERIC_WRITE, 0, NULL,
+        m_hFile = CreateFileW(NativePath(path).c_str(), GENERIC_WRITE, 0, NULL,
                               createAlways ? CREATE_ALWAYS : CREATE_NEW,
                               FILE_ATTRIBUTE_NORMAL, NULL);
         return m_hFile != INVALID_HANDLE_VALUE;
@@ -439,7 +498,7 @@ public:
     }
 
     // IUnknown
-    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) {
+    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
         if (iid == IID_IUnknown) {
             *outObject = static_cast<IOutStream*>(this);
             AddRef();
@@ -454,14 +513,14 @@ public:
         return E_NOINTERFACE;
     }
 
-    STDMETHOD_(ULONG, AddRef)() { return ++m_refCount; }
-    STDMETHOD_(ULONG, Release)() {
+    STDMETHOD_(ULONG, AddRef)() noexcept { return ++m_refCount; }
+    STDMETHOD_(ULONG, Release)() noexcept {
         ULONG res = --m_refCount;
         if (res == 0) delete this;
         return res;
     }
 
-    STDMETHOD(Write)(const void *data, UInt32 size, UInt32 *processedSize) {
+    STDMETHOD(Write)(const void *data, UInt32 size, UInt32 *processedSize) noexcept {
         DWORD written = 0;
         if (!WriteFile(m_hFile, data, size, &written, NULL)) {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -470,7 +529,7 @@ public:
         return S_OK;
     }
 
-    STDMETHOD(Seek)(Int64 offset, UInt32 seekOrigin, UInt64 *newPosition) {
+    STDMETHOD(Seek)(Int64 offset, UInt32 seekOrigin, UInt64 *newPosition) noexcept {
         LARGE_INTEGER li;
         li.QuadPart = offset;
         LARGE_INTEGER newPos;
@@ -481,7 +540,7 @@ public:
         return S_OK;
     }
 
-    STDMETHOD(SetSize)(UInt64 newSize) {
+    STDMETHOD(SetSize)(UInt64 newSize) noexcept {
         LARGE_INTEGER li;
         li.QuadPart = newSize;
         if (!SetFilePointerEx(m_hFile, li, NULL, FILE_BEGIN)) {
@@ -517,12 +576,13 @@ public:
         DWORD attrib;
     };
 
-    CUpdateCallback(const std::vector<std::wstring>& srcPaths, ProgressCallback progress)
+    CUpdateCallback(const std::vector<std::wstring>& srcPaths, ProgressCallback progress, const std::wstring& password = L"")
         : m_progress(progress)
         , m_total(0)
         , m_completed(0)
         , m_refCount(0)
     {
+        m_password = password;
         // Enumerate all files
         for (const auto& srcPath : srcPaths) {
             std::wstring name = GetFileName(srcPath);
@@ -558,7 +618,7 @@ public:
     UInt32 GetItemCount() const { return (UInt32)m_files.size(); }
 
     // IUnknown
-    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) {
+    STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
         if (iid == IID_IUnknown) {
             *outObject = static_cast<IArchiveUpdateCallback*>(this);
         } else if (iid == IID_IArchiveUpdateCallback) {
@@ -573,20 +633,20 @@ public:
         return S_OK;
     }
 
-    STDMETHOD_(ULONG, AddRef)() { return ++m_refCount; }
-    STDMETHOD_(ULONG, Release)() {
+    STDMETHOD_(ULONG, AddRef)() noexcept { return ++m_refCount; }
+    STDMETHOD_(ULONG, Release)() noexcept {
         ULONG res = --m_refCount;
         if (res == 0) delete this;
         return res;
     }
 
     // IProgress
-    STDMETHOD(SetTotal)(UInt64 total) {
+    STDMETHOD(SetTotal)(UInt64 total) noexcept {
         m_total = total;
         return S_OK;
     }
 
-    STDMETHOD(SetCompleted)(const UInt64 *completeValue) {
+    STDMETHOD(SetCompleted)(const UInt64 *completeValue) noexcept {
         if (completeValue) {
             m_completed = *completeValue;
             if (m_progress && !m_progress(m_completed, m_total)) {
@@ -597,14 +657,14 @@ public:
     }
 
     // IArchiveUpdateCallback
-    STDMETHOD(GetUpdateItemInfo)(UInt32 index, Int32 *newData, Int32 *newProps, UInt32 *indexInArchive) {
+    STDMETHOD(GetUpdateItemInfo)(UInt32 index, Int32 *newData, Int32 *newProps, UInt32 *indexInArchive) noexcept {
         if (newData) *newData = 1;      // New data
         if (newProps) *newProps = 1;    // New properties
         if (indexInArchive) *indexInArchive = (UInt32)-1;  // Not in archive
         return S_OK;
     }
 
-    STDMETHOD(GetProperty)(UInt32 index, PROPID propID, PROPVARIANT *value) {
+    STDMETHOD(GetProperty)(UInt32 index, PROPID propID, PROPVARIANT *value) noexcept {
         PropVariantInit(value);
         if (index >= m_files.size()) return E_INVALIDARG;
 
@@ -637,7 +697,7 @@ public:
         return S_OK;
     }
 
-    STDMETHOD(GetStream)(UInt32 index, ISequentialInStream **inStream) {
+    STDMETHOD(GetStream)(UInt32 index, ISequentialInStream **inStream) noexcept {
         *inStream = NULL;
         if (index >= m_files.size()) return E_INVALIDARG;
 
@@ -654,18 +714,19 @@ public:
         return S_OK;
     }
 
-    STDMETHOD(SetOperationResult)(Int32 operationResult) {
+    STDMETHOD(SetOperationResult)(Int32 operationResult) noexcept {
         return S_OK;
     }
 
     // ICryptoGetTextPassword2
-    STDMETHOD(CryptoGetTextPassword2)(Int32 *passwordIsDefined, BSTR *password) {
-        *passwordIsDefined = 0;
-        *password = SysAllocString(L"");
+    STDMETHOD(CryptoGetTextPassword2)(Int32 *passwordIsDefined, BSTR *password) noexcept {
+        *passwordIsDefined = !m_password.empty();
+        *password = SysAllocString(m_password.c_str());
         return S_OK;
     }
 
 private:
+    std::wstring m_password;
     std::vector<FileItem> m_files;
     ProgressCallback m_progress;
     UInt64 m_total;
@@ -673,7 +734,7 @@ private:
     ULONG m_refCount;
 
     std::wstring GetFileName(const std::wstring& path) {
-        size_t pos = path.rfind(L'\\');
+        size_t pos = path.find_last_of(L"\\/");
         return (pos != std::wstring::npos) ? path.substr(pos + 1) : path;
     }
 
@@ -735,8 +796,10 @@ private:
 // SevenZipCore Implementation
 //////////////////////////////////////////////////////////////////////////////
 
+#include "ArchiveStreams.h"
+
 SevenZipCore& SevenZipCore::Instance() {
-    static SevenZipCore instance;
+    static thread_local SevenZipCore instance;
     return instance;
 }
 
@@ -753,6 +816,8 @@ void SevenZipCore::InitFormats() {
         { L"7z",    L".7z",   CLSID_CFormat7z,    true  },
         { L"Zip",   L".zip",  CLSID_CFormatZip,   true  },
         { L"Rar",   L".rar",  CLSID_CFormatRar,   false },
+        { L"rar5", L".rar", CLSID_CFormatRar5, false },
+        { L"xz", L".xz", CLSID_CFormatXz, false },
         { L"Tar",   L".tar",  CLSID_CFormatTar,   true  },
         { L"GZip",  L".gz",   CLSID_CFormatGZip,  true  },
         { L"BZip2", L".bz2",  CLSID_CFormatBZip2, true  },
@@ -798,72 +863,90 @@ const GUID* SevenZipCore::GetFormatForExtension(const std::wstring& ext) {
 }
 
 const GUID* SevenZipCore::DetectFormat(const std::wstring& path) {
-    // First try by extension
-    const wchar_t* ext = PathFindExtensionW(path.c_str());
-    if (ext && *ext) {
-        const GUID* guid = GetFormatForExtension(ext);
-        if (guid) return guid;
+    const auto plan = InspectArchive(path);
+    for (const auto& format : m_formats) {
+        if (_wcsicmp(plan.format.c_str(), format.name.c_str()) == 0 ||
+            L"." + plan.format == format.extension) {
+            if (plan.format == L"rar5") return &CLSID_CFormatRar5;
+            return &format.classId;
+        }
     }
-
-    // TODO: Add signature-based detection
-    return &CLSID_CFormat7z;  // Default to 7z
+    return nullptr;
 }
 
-bool SevenZipCore::OpenArchive(const std::wstring& path) {
+bool SevenZipCore::OpenArchive(const std::wstring& path, const std::wstring& password, ProgressCallback progress) {
+    return OpenArchive(InspectArchive(path), password, progress);
+}
+
+bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& password, ProgressCallback progress) {
     CloseArchive();
-
-    // Detect format
-    const GUID* formatId = DetectFormat(path);
-    if (!formatId) {
-        return false;
+    m_error.clear();
+    if (progress && !progress(0, 0)) { m_error = L"已取消"; return false; }
+    if (!plan.error.empty()) { m_error = plan.error; return false; }
+    if (plan.concatenated) {
+        auto stream = new CVolumeInStream;
+        if (!stream->Open(plan.volumes)) { stream->Release(); m_error = L"无法读取分卷"; return false; }
+        m_inStream = stream;
+    } else {
+        auto stream = new CFullInFileStream;
+        stream->AddRef();
+        if (!stream->Open(plan.firstVolume.c_str(), plan.dataOffset, plan.dataSize)) { stream->Release(); m_error = L"无法读取压缩包"; return false; }
+        m_inStream = stream;
     }
-
-    // Create archive handler
-    m_archive = CreateInArchive(*formatId);
+    const GUID* detected = nullptr;
+    for (const auto& format : m_formats) {
+        if (_wcsicmp(plan.format.c_str(), format.name.c_str()) == 0 || L"." + plan.format == format.extension) {
+            detected = plan.format == L"rar5" ? &CLSID_CFormatRar5 : &format.classId; break;
+        }
+    }
+    std::vector<GUID> candidates;
+    if (detected) candidates.push_back(*detected);
+    for (const auto& format : m_formats) {
+        if (!detected || format.classId != *detected) candidates.push_back(format.classId);
+    }
+    bool requestedPassword = false;
+    for (const auto& id : candidates) {
+        auto archive = CreateInArchive(id);
+        if (!archive) continue;
+        m_inStream->Seek(0, STREAM_SEEK_SET, nullptr);
+        auto callback = new COpenCallback(plan.firstVolume, password, progress, plan.volumes, plan.volumeExtension, plan.volumeName, plan.volumeAliases);
+        UInt64 maxCheck = 1 << 22;
+        HRESULT result = archive->Open(m_inStream, &maxCheck, callback);
+        requestedPassword = requestedPassword || callback->passwordRequested;
+        callback->Release();
+        // S_FALSE means the handler did not recognize this archive.
+        if (result == S_OK) { m_archive = archive; break; }
+        archive->Close();
+        archive->Release();
+        if (result == E_ABORT) { CloseArchive(); m_error = L"已取消"; return false; }
+    }
     if (!m_archive) {
+        CloseArchive();
+        m_needsPassword = requestedPassword;
+        m_error = requestedPassword ? L"无法打开加密文件头，请检查密码" : L"无法打开：文件损坏、分卷不完整或格式不支持";
         return false;
     }
-
-    // Open file stream
-    CFullInFileStream* inStream = new CFullInFileStream();
-    inStream->AddRef();
-    if (!inStream->Open(path.c_str())) {
-        inStream->Release();
-        m_archive->Release();
-        m_archive = nullptr;
-        return false;
+    PROPVARIANT diagnostics{};
+    m_archive->GetArchiveProperty(kpidError, &diagnostics);
+    bool incomplete = diagnostics.vt == VT_BSTR && SysStringLen(diagnostics.bstrVal) != 0;
+    PropVariantClear(&diagnostics);
+    m_archive->GetArchiveProperty(kpidErrorFlags, &diagnostics);
+    incomplete = incomplete || (diagnostics.vt == VT_UI4 && diagnostics.ulVal != 0);
+    PropVariantClear(&diagnostics);
+    if (incomplete) {
+        CloseArchive(); m_error = L"压缩包不完整：存在缺卷或文件头损坏"; return false;
     }
-    m_inStream = inStream;
-
-    // Open archive
-    UInt64 maxCheckStartPosition = 1 << 22;
-    HRESULT hr = m_archive->Open(m_inStream, &maxCheckStartPosition, nullptr);
-    if (FAILED(hr)) {
-        m_inStream->Release();
-        m_inStream = nullptr;
-        m_archive->Release();
-        m_archive = nullptr;
-        return false;
-    }
-
-    m_currentPath = path;
-    m_needsPassword = false;
-
-    // Check if any item is encrypted
-    UInt32 numItems = 0;
-    m_archive->GetNumberOfItems(&numItems);
-    for (UInt32 i = 0; i < numItems; i++) {
+    m_currentPath = plan.firstVolume;
+    m_needsPassword = requestedPassword;
+    UInt32 count = 0;
+    m_archive->GetNumberOfItems(&count);
+    for (UInt32 i = 0; i < count; ++i) {
         PROPVARIANT prop;
         PropVariantInit(&prop);
         m_archive->GetProperty(i, kpidEncrypted, &prop);
-        if (prop.vt == VT_BOOL && prop.boolVal != VARIANT_FALSE) {
-            m_needsPassword = true;
-            PropVariantClear(&prop);
-            break;
-        }
+        if (prop.vt == VT_BOOL && prop.boolVal != VARIANT_FALSE) m_needsPassword = true;
         PropVariantClear(&prop);
     }
-
     return true;
 }
 
@@ -946,63 +1029,18 @@ std::vector<ArchiveItem> SevenZipCore::GetItems() {
 }
 
 bool SevenZipCore::TestPassword(const std::wstring& password) {
+    return TestArchive(password);
+}
+
+bool SevenZipCore::TestArchive(const std::wstring& password, ProgressCallback progress) {
     if (!m_archive) return false;
-
-    // Find first non-directory file
-    UInt32 numItems = 0;
-    m_archive->GetNumberOfItems(&numItems);
-
-    UInt32 testIndex = (UInt32)-1;
-    for (UInt32 i = 0; i < numItems; i++) {
-        PROPVARIANT prop;
-        PropVariantInit(&prop);
-        m_archive->GetProperty(i, kpidIsDir, &prop);
-        bool isDir = (prop.vt == VT_BOOL && prop.boolVal != VARIANT_FALSE);
-        PropVariantClear(&prop);
-
-        if (!isDir) {
-            testIndex = i;
-            break;
-        }
-    }
-
-    if (testIndex == (UInt32)-1) {
-        return true;  // No files to test, assume success
-    }
-
-    // Create temp directory
-    wchar_t tempPath[MAX_PATH];
-    GetTempPathW(MAX_PATH, tempPath);
-    std::wstring testDir = std::wstring(tempPath) + L"7ztest_" + std::to_wstring(GetTickCount64());
-    CreateDirectoryW(testDir.c_str(), NULL);
-
-    // Try to extract first file
-    CExtractCallback* callback = new CExtractCallback(m_archive, testDir, password, nullptr);
+    auto callback = new CExtractCallback(m_archive, L"", password, progress);
     callback->AddRef();
-    UInt32 indices[1] = { testIndex };
-    HRESULT hr = m_archive->Extract(indices, 1, 0, callback);
-
-    bool passwordWasRequested = callback->WasPasswordRequested();
+    HRESULT hr = m_archive->Extract(nullptr, static_cast<UInt32>(-1), 1, callback);
+    const bool success = hr == S_OK && callback->Succeeded();
     callback->Release();
-
-    // Cleanup
-    WIN32_FIND_DATAW fd;
-    std::wstring searchPath = testDir + L"\\*";
-    HANDLE hFind = FindFirstFileW(searchPath.c_str(), &fd);
-    if (hFind != INVALID_HANDLE_VALUE) {
-        do {
-            if (wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) {
-                std::wstring filePath = testDir + L"\\" + fd.cFileName;
-                DeleteFileW(filePath.c_str());
-            }
-        } while (FindNextFileW(hFind, &fd));
-        FindClose(hFind);
-    }
-    RemoveDirectoryW(testDir.c_str());
-
-    m_needsPassword = passwordWasRequested;
-
-    return SUCCEEDED(hr);
+    if (!success) m_error = hr == E_ABORT ? L"已取消" : L"校验失败：密码错误、数据损坏或缺少分卷";
+    return success;
 }
 
 bool SevenZipCore::Extract(const std::wstring& outDir,
@@ -1013,9 +1051,11 @@ bool SevenZipCore::Extract(const std::wstring& outDir,
     CExtractCallback* callback = new CExtractCallback(m_archive, outDir, password, progress);
     callback->AddRef();
     HRESULT hr = m_archive->Extract(nullptr, (UInt32)-1, 0, callback);
+    const bool success = hr == S_OK && callback->Succeeded();
+    const auto outputError = callback->OutputError();
     callback->Release();
-
-    return SUCCEEDED(hr);
+    if (!success) m_error = hr == E_ABORT ? L"已取消" : !outputError.empty() ? outputError : L"解压失败：密码、数据校验或输出路径错误（已有文件不会覆盖）";
+    return success;
 }
 
 bool SevenZipCore::ExtractFiles(const std::vector<uint32_t>& indices,
@@ -1027,62 +1067,126 @@ bool SevenZipCore::ExtractFiles(const std::vector<uint32_t>& indices,
     CExtractCallback* callback = new CExtractCallback(m_archive, outDir, password, progress);
     callback->AddRef();
     HRESULT hr = m_archive->Extract(indices.data(), (UInt32)indices.size(), 0, callback);
+    const bool success = hr == S_OK && callback->Succeeded();
+    const auto outputError = callback->OutputError();
     callback->Release();
-
-    return SUCCEEDED(hr);
+    if (!success) m_error = hr == E_ABORT ? L"已取消" : !outputError.empty() ? outputError : L"解压失败：密码、数据校验或输出路径错误（已有文件不会覆盖）";
+    return success;
 }
 
-bool SevenZipCore::Compress(const std::vector<std::wstring>& srcPaths,
-                            const std::wstring& archivePath,
-                            const std::wstring& format,
+bool SevenZipCore::Compress(const std::vector<std::wstring>& sources,
+                            const std::wstring& destination, const std::wstring& format,
                             ProgressCallback progress) {
-    // Find format
-    const GUID* formatId = nullptr;
-    for (const auto& fmt : m_formats) {
-        if (_wcsicmp(format.c_str(), fmt.name.c_str()) == 0 ||
-            _wcsicmp((L"." + format).c_str(), fmt.extension.c_str()) == 0) {
-            if (fmt.canUpdate) {
-                formatId = &fmt.classId;
-                break;
+    CompressionOptions options;
+    options.format = format;
+    return Compress(sources, destination, options, progress);
+}
+
+bool SevenZipCore::Compress(const std::vector<std::wstring>& sources,
+                            const std::wstring& destination, const CompressionOptions& options,
+                            ProgressCallback progress) {
+    namespace fs = std::filesystem;
+    m_error.clear();
+    if (sources.empty() || (options.format != L"7z" && options.format != L"zip") || options.level > 9) {
+        m_error = L"请选择文件和有效的压缩格式"; return false;
+    }
+    std::error_code ec;
+    std::set<std::wstring> names;
+    const auto output = fs::absolute(destination, ec).lexically_normal();
+    auto fold = [](std::wstring value) { std::transform(value.begin(), value.end(), value.begin(), towlower); return value; };
+    for (const auto& source : sources) {
+        const auto src = fs::absolute(source, ec).lexically_normal();
+        if (ec || !fs::exists(src, ec) || !names.insert(fold(src.filename().wstring())).second) {
+            m_error = L"源文件不存在，或多个输入使用相同的顶层名称"; return false;
+        }
+        const auto attrs = GetFileAttributesW(src.c_str());
+        if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) { m_error = L"请直接添加链接指向的原始文件夹"; return false; }
+        if (fs::is_directory(src, ec)) {
+            for (const auto& entry : fs::recursive_directory_iterator(src, fs::directory_options::none, ec)) {
+                if (GetFileAttributesW(entry.path().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    m_error = L"源文件夹包含链接，请移除链接后重试"; return false;
+                }
+            }
+            if (ec) { m_error = L"无法读取源文件夹"; return false; }
+            auto prefix = fold(src.wstring()) + L"\\";
+            if (fold(output.wstring()).rfind(prefix, 0) == 0) {
+                m_error = L"压缩包不能保存到正在压缩的文件夹内"; return false;
             }
         }
     }
-
-    if (!formatId) {
-        // Default to 7z
-        formatId = &CLSID_CFormat7z;
+    if (fs::exists(output, ec) || (options.volumeSize && fs::exists(output.wstring() + L".001", ec))) {
+        m_error = L"输出文件已存在，请更换名称"; return false;
     }
-
-    // Create output archive
-    IOutArchive* outArchive = CreateOutArchive(*formatId);
-    if (!outArchive) {
-        return false;
+    fs::create_directories(output.parent_path(), ec);
+    if (ec) { m_error = L"无法创建输出文件夹"; return false; }
+    wchar_t temporary[MAX_PATH]{};
+    if (!GetTempFileNameW(output.parent_path().c_str(), L"7zc", 0, temporary)) {
+        m_error = L"无法创建临时文件"; return false;
     }
-
-    // Create output stream
-    CFullOutFileStream* outStream = new CFullOutFileStream();
-    outStream->AddRef();
-    if (!outStream->Create(archivePath.c_str())) {
-        outStream->Release();
-        outArchive->Release();
-        return false;
+    IOutArchive* archive = CreateOutArchive(options.format == L"zip" ? CLSID_CFormatZip : CLSID_CFormat7z);
+    if (!archive) { DeleteFileW(temporary); m_error = L"无法创建压缩引擎"; return false; }
+    ISetProperties* properties = nullptr;
+    HRESULT hr = archive->QueryInterface(IID_ISetProperties, reinterpret_cast<void**>(&properties));
+    if (hr == S_OK) {
+        const bool zip = options.format == L"zip";
+        const wchar_t* keys[] = {L"x", zip ? L"em" : L"he"};
+        PROPVARIANT values[2]{};
+        values[0].vt = VT_UI4; values[0].ulVal = options.level;
+        if (zip) { values[1].vt = VT_BSTR; values[1].bstrVal = SysAllocString(L"AES256"); }
+        else { values[1].vt = VT_BOOL; values[1].boolVal = options.encryptHeaders ? VARIANT_TRUE : VARIANT_FALSE; }
+        hr = properties->SetProperties(keys, values, !options.password.empty() && (zip || options.encryptHeaders) ? 2 : 1);
+        PropVariantClear(&values[1]);
+        properties->Release();
     }
-
-    // Create update callback
-    CUpdateCallback* callback = new CUpdateCallback(srcPaths, progress);
+    auto stream = new CFullOutFileStream;
+    stream->AddRef();
+    if (hr != S_OK || !stream->Create(temporary)) {
+        stream->Release(); archive->Release(); DeleteFileW(temporary);
+        m_error = L"无法应用压缩设置或打开输出文件"; return false;
+    }
+    auto callback = new CUpdateCallback(sources, progress, options.password);
     callback->AddRef();
-
-    // Update archive
-    HRESULT hr = outArchive->UpdateItems(outStream, callback->GetItemCount(), callback);
-
-    callback->Release();
-    outStream->Release();
-    outArchive->Release();
-
-    if (FAILED(hr)) {
-        DeleteFileW(archivePath.c_str());
-        return false;
+    hr = archive->UpdateItems(stream, callback->GetItemCount(), callback);
+    callback->Release(); stream->Release(); archive->Release();
+    if (hr != S_OK) {
+        DeleteFileW(temporary);
+        m_error = hr == E_ABORT ? L"已取消" : L"压缩失败，请检查源文件及可用空间"; return false;
     }
-
-    return true;
+    if (!options.volumeSize) {
+        bool ok = MoveFileExW(temporary, output.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        if (!ok) { DeleteFileW(temporary); m_error = L"无法保存：输出文件已存在或被占用"; }
+        return ok;
+    }
+    std::vector<std::wstring> created;
+    bool success = true;
+    {
+        std::ifstream input(fs::path(temporary), std::ios::binary);
+        auto total = fs::file_size(temporary, ec);
+        uint64_t completed = 0;
+        std::vector<char> buffer(1024 * 1024);
+        for (size_t part = 1; completed < total && success; ++part) {
+            wchar_t suffix[32]; swprintf_s(suffix, L".%03zu", part);
+            const auto name = output.wstring() + suffix;
+            HANDLE file = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) { success = false; break; }
+            created.push_back(name);
+            uint64_t written = 0;
+            while (written < options.volumeSize && completed < total) {
+                if (progress && !progress(completed, total)) { success = false; break; }
+                auto size = static_cast<DWORD>((std::min)({options.volumeSize - written, total - completed, static_cast<uint64_t>(buffer.size())}));
+                input.read(buffer.data(), size);
+                DWORD count = 0;
+                if (input.gcount() != size || !WriteFile(file, buffer.data(), size, &count, nullptr) || count != size) { success = false; break; }
+                written += count; completed += count;
+            }
+            if (!FlushFileBuffers(file)) success = false;
+            CloseHandle(file);
+        }
+    }
+    DeleteFileW(temporary);
+    if (!success) {
+        for (const auto& name : created) DeleteFileW(name.c_str());
+        m_error = L"分卷未完成：操作已取消、空间不足或分卷名称冲突";
+    }
+    return success;
 }

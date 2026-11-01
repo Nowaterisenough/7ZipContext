@@ -12,6 +12,7 @@
 struct IInArchive;
 struct IOutArchive;
 struct IInStream;
+struct ArchivePlan;
 
 // Progress callback: returns false to cancel operation
 using ProgressCallback = std::function<bool(uint64_t completed, uint64_t total)>;
@@ -34,16 +35,27 @@ struct ArchiveFormat {
     bool canUpdate;
 };
 
+struct CompressionOptions {
+    std::wstring format = L"7z";
+    std::wstring password;
+    unsigned int level = 5;
+    uint64_t volumeSize = 0;
+    bool encryptHeaders = false;
+};
+
 // 7-Zip Core functionality wrapper
 class SevenZipCore {
 public:
+    SevenZipCore();
+    ~SevenZipCore();
     static SevenZipCore& Instance();
 
     // Get supported formats
     const std::vector<ArchiveFormat>& GetFormats() const { return m_formats; }
 
     // Open an archive for reading
-    bool OpenArchive(const std::wstring& path);
+    bool OpenArchive(const std::wstring& path, const std::wstring& password = L"", ProgressCallback progress = nullptr);
+    bool OpenArchive(const ArchivePlan& plan, const std::wstring& password = L"", ProgressCallback progress = nullptr);
 
     // Close the current archive
     void CloseArchive();
@@ -57,11 +69,13 @@ public:
     // Get number of items
     uint32_t GetItemCount();
 
-    // Check if archive needs a password
+    // Also true if the last OpenArchive failed while requesting an encrypted header password.
     bool NeedsPassword() const { return m_needsPassword; }
 
     // Test if a password is correct (tries to extract first file)
     bool TestPassword(const std::wstring& password);
+    bool TestArchive(const std::wstring& password = L"", ProgressCallback progress = nullptr);
+    const std::wstring& LastError() const { return m_error; }
 
     // Extract all files to the output directory
     bool Extract(const std::wstring& outDir,
@@ -79,6 +93,10 @@ public:
                   const std::wstring& archivePath,
                   const std::wstring& format = L"7z",
                   ProgressCallback progress = nullptr);
+    bool Compress(const std::vector<std::wstring>& srcPaths,
+                  const std::wstring& archivePath,
+                  const CompressionOptions& options,
+                  ProgressCallback progress = nullptr);
 
     // Get the format GUID for a file extension
     const GUID* GetFormatForExtension(const std::wstring& ext);
@@ -87,9 +105,6 @@ public:
     const GUID* DetectFormat(const std::wstring& path);
 
 private:
-    SevenZipCore();
-    ~SevenZipCore();
-
     // Disable copy
     SevenZipCore(const SevenZipCore&) = delete;
     SevenZipCore& operator=(const SevenZipCore&) = delete;
@@ -106,6 +121,7 @@ private:
     IInStream* m_inStream = nullptr;
     std::wstring m_currentPath;
     bool m_needsPassword = false;
+    std::wstring m_error;
 
     // Supported formats
     std::vector<ArchiveFormat> m_formats;

@@ -23,7 +23,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayIcon={app}\7ZipContext.dll
+UninstallDisplayIcon={app}\7ZipContextApp.exe
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -34,13 +34,15 @@ chinesesimplified.BeveledLabel=7-Zip 右键菜单扩展
 english.BeveledLabel=7-Zip Context Menu Extension
 
 [Files]
-Source: "..\build\RelWithDebInfo\7ZipContext.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\Package\AppxManifest.xml"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\Package\Assets\*"; DestDir: "{app}\Assets"; Flags: ignoreversion recursesubdirs
+Source: "..\build\install\*"; DestDir: "{app}"; Excludes: "*.pdb,*.pfx,*.log,*.previous-*.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\7-Zip Context"; Filename: "{app}\7ZipContextApp.exe"
 
 [Run]
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\register.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "正在注册右键菜单扩展..."
 Filename: "powershell.exe"; Parameters: "-Command ""Stop-Process -Name explorer -Force; Start-Sleep -Seconds 1; Start-Process explorer"""; Flags: runhidden nowait; StatusMsg: "正在重启资源管理器..."
+Filename: "{app}\7ZipContextApp.exe"; Parameters: "--tray"; Flags: nowait postinstall skipifsilent; Description: "启动 7-Zip Context 托盘"
 
 [UninstallRun]
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\unregister.ps1"""; Flags: runhidden waituntilterminated
@@ -51,14 +53,9 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   RegisterScript: String;
   UnregisterScript: String;
-  DummyExe: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    // Create dummy.exe (minimal PE)
-    DummyExe := ExpandConstant('{app}\dummy.exe');
-    SaveStringToFile(DummyExe, 'MZ', False);
-
     // Create register.ps1
     RegisterScript :=
       '$ErrorActionPreference = "Stop"' + #13#10 +
