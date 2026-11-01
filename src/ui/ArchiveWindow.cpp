@@ -286,6 +286,12 @@ ArchiveWindow::ArchiveWindow(ArchiveController& controller, bool compact) : cont
     if (popupHeader) {
         popupHeader->insertWidget(popupHeader->count() - 1, shell_->refresh);
         popupHeader->addWidget(shell_->settings);
+        auto* close = new QToolButton; close->setObjectName(QStringLiteral("closePopup"));
+        close->setProperty("shellTool", true);
+        close->setIcon(desktop::HeaderLineIcon(desktop::HeaderIcon::Close, true)); close->setIconSize(QSize(15, 15));
+        close->setToolTip(QStringLiteral("关闭弹窗")); close->setAccessibleName(close->toolTip()); close->setFixedSize(30, 28);
+        popupHeader->addWidget(close);
+        connect(close, &QToolButton::clicked, this, &QWidget::hide);
     }
     shell_->navigate = [this](const QString& page) { navigate(page); };
     for (auto* page : {makeExtractPage(), makeCompressPage(), makeTasksPage(), makeSettingsPage(false), makeSettingsPage(true), makePasswordsPage()}) {

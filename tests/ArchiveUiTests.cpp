@@ -200,6 +200,11 @@ private slots:
         popup.toggleAtTray(tray); QVERIFY(!popup.isVisible());
         popup.toggleAtTray(tray); QTest::qWait(20); QVERIFY(popup.isVisible());
         QTest::keyClick(&popup, Qt::Key_Escape); QTRY_VERIFY(!popup.isVisible());
+        QSignalSpy quit(&controller, &ArchiveController::quitReady);
+        popup.toggleAtTray(tray); QTest::qWait(20); QVERIFY(popup.isVisible());
+        auto* close = popup.findChild<QAbstractButton*>("closePopup"); QVERIFY(close);
+        QTest::mouseClick(close, Qt::LeftButton); QTRY_VERIFY(!popup.isVisible()); QCOMPARE(quit.count(), 0);
+        popup.toggleAtTray(tray); QTest::qWait(20); QVERIFY(popup.isVisible()); popup.hide();
         controller.hideOnBlur = true; controller.savePreferences();
         QVERIFY(ArchiveController().hideOnBlur);
         QVERIFY(!preferences.contains("Window/HideOnBlur"));
