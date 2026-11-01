@@ -136,7 +136,7 @@ GitHub Actions 工作流为 `.github/workflows/build.yml`，名称是 **Build an
 - `SHA256SUMS.txt`：发布附件的 SHA-256 校验值。
 - `build-info.json`：版本、源码提交及打包检查信息。
 
-工作流固定 Windows 2022、MSVC 2022 和 Qt 6.8.3，WiX 及扩展固定为 6.0.2，Actions 固定到具体提交。编译后运行七组程序测试、发布版本测试及 Windows PowerShell 更新/回滚测试；打包时检查程序版本、MSI 中每个文件及大小，再解开便携包，在仅包含系统目录的 PATH 下运行启动检查。包内包含完整运行库、更新脚本与逐文件 SHA-256 更新清单。MSVC 运行库随包部署，发布任务下载产物后会再次核验 SHA-256。测试或打包失败时不发布，日志保留在 Actions artifacts。
+工作流固定 Windows 2022、MSVC 2022 和 Qt 6.8.3，WiX 及扩展固定为 6.0.2，Actions 固定到具体提交。编译后运行七组程序测试、发布版本测试及 Windows PowerShell 更新/回滚测试；打包时检查程序版本、MSI 中每个文件及大小，再解开便携包，在仅包含系统目录的 PATH 下运行启动检查。随后在隔离的云端机器上实际安装 MSI，核对安装记录、开始菜单和右键菜单，运行已安装程序的启动检查，再卸载并验证清理结果。包内包含完整运行库、更新脚本与逐文件 SHA-256 更新清单。MSVC 运行库随包部署，发布任务下载产物后会再次核验 SHA-256。测试、打包或实际安装失败时不发布，日志保留在 Actions artifacts。
 
 无需配置个人访问令牌，发布使用 GitHub 自动提供的 `GITHUB_TOKEN`；只有发布任务请求 `contents: write` 权限。工作流必须先提交并推送到 GitHub 才会触发。
 
@@ -181,22 +181,29 @@ MSVC 多配置构建需添加对应的 `--config Release`，程序位于 `build/
 
 桌面验收路径：运行 EXE → 关闭主窗口 → 单击托盘 → 添加/拖入全部文件或文件夹 → 选择保存位置 → 点击“开始解压” → 自动进入任务页并产出整理结果 → 切换压缩页生成分卷 → 展开主窗口。还应检查多显示器 DPI 切换、重复单击托盘、文件选择窗口打开时弹窗保持可用，以及暂停后关闭窗口仍可继续任务。
 
-## 安装右键菜单
+## 安装程序和右键菜单
 
-管理员 PowerShell 中运行安装目录的脚本：
+MSI 默认安装到 `C:\Program Files\7ZipContext`，在开始菜单创建“7-Zip Context”入口，并在 Windows 安装记录中保存安装位置。普通安装无需开发者模式；文件和文件夹的常规右键菜单提供“解压并整理”和“添加到压缩包”，Windows 11 上可从“显示更多选项”进入。
+
+Windows 11 新式一级右键菜单依赖稀疏包身份。目前未签名的稀疏包只会在系统已允许开发模式时尝试注册；策略不允许或注册失败时保留完整桌面程序和常规右键菜单，不回滚 MSI。安装器不会开启开发者模式、导出私钥、添加受信任证书或强制重启资源管理器。可选注册日志位于 `%LOCALAPPDATA%\7ZipContext\registration.log`。
+
+便携版完整解压后直接运行 `7ZipContextApp.exe`。如已自行配置允许开发模式，可以用以下脚本尝试注册当前用户的新式右键菜单：
+
 
 ```powershell
 cd build/install
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-系统需允许注册开发包。安装脚本注册稀疏包；安装后重新启动资源管理器或注销登录，使菜单扩展生效。仓库同时维护 WiX MSI 和 Inno Setup 打包配置，两者均包含桌面程序。
+如果资源管理器尚未刷新新菜单，可以自行重新启动资源管理器或注销登录。仓库同时维护 WiX MSI 和 Inno Setup 打包配置，两者均包含桌面程序。
 
-卸载右键菜单：
+仅移除由当前程序目录注册的新式右键菜单：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
+
+MSI 程序及其常规右键菜单通过 Windows“已安装的应用”卸载。上述脚本不删除密码单或其他程序文件。
 
 ## License
 

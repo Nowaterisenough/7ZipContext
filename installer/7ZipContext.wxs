@@ -16,6 +16,7 @@
            Compressed="yes">
 
     <SummaryInformation Description="7-Zip Context Menu Extension for Windows 11" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
 
@@ -27,6 +28,7 @@
         <Directory Id="AssetsFolder" Name="Assets" />
       </Directory>
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
 
     <!-- Components placed under explicit directories -->
     <DirectoryRef Id="INSTALLFOLDER">
@@ -43,7 +45,10 @@
 
       <!-- Desktop app and resident tray host -->
       <Component Id="DesktopApp" Guid="A1B2C3D4-3333-4B3A-9E1F-000000000004" Bitness="always64">
-        <File Id="DesktopEXE" Source="$(var.StagingDir)\7ZipContextApp.exe" KeyPath="yes" />
+        <File Id="DesktopEXE" Source="$(var.StagingDir)\7ZipContextApp.exe" KeyPath="yes">
+          <Shortcut Id="DesktopStartMenu" Directory="ProgramMenuFolder" Name="7-Zip Context"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+        </File>
       </Component>
 
       <!-- Register script -->
@@ -54,6 +59,33 @@
       <!-- Unregister script -->
       <Component Id="UnregisterScript" Guid="A1B2C3D4-5555-4B3A-9E1F-000000000006" Bitness="always64">
         <File Id="UnregisterPS1" Source="$(var.StagingDir)\unregister.ps1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="ClassicContextMenu" Guid="A1B2C3D4-7777-4B3A-9E1F-000000000008" Bitness="always64">
+        <RegistryKey Root="HKLM" Key="Software\Classes\*\shell\7ZipContext" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="MUIVerb" Value="7-Zip Context" Type="string" KeyPath="yes" />
+          <RegistryValue Name="SubCommands" Value="" Type="string" />
+          <RegistryKey Key="shell\extract">
+            <RegistryValue Value="解压并整理…" Type="string" />
+            <RegistryKey Key="command"><RegistryValue Value="&quot;[INSTALLFOLDER]7ZipContextApp.exe&quot; --extract &quot;%1&quot;" Type="string" /></RegistryKey>
+          </RegistryKey>
+          <RegistryKey Key="shell\compress">
+            <RegistryValue Value="添加到压缩包…" Type="string" />
+            <RegistryKey Key="command"><RegistryValue Value="&quot;[INSTALLFOLDER]7ZipContextApp.exe&quot; --compress &quot;%1&quot;" Type="string" /></RegistryKey>
+          </RegistryKey>
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\shell\7ZipContext" ForceDeleteOnUninstall="yes">
+          <RegistryValue Name="MUIVerb" Value="7-Zip Context" Type="string" />
+          <RegistryValue Name="SubCommands" Value="" Type="string" />
+          <RegistryKey Key="shell\extract">
+            <RegistryValue Value="解压并整理…" Type="string" />
+            <RegistryKey Key="command"><RegistryValue Value="&quot;[INSTALLFOLDER]7ZipContextApp.exe&quot; --extract &quot;%1&quot;" Type="string" /></RegistryKey>
+          </RegistryKey>
+          <RegistryKey Key="shell\compress">
+            <RegistryValue Value="添加到压缩包…" Type="string" />
+            <RegistryKey Key="command"><RegistryValue Value="&quot;[INSTALLFOLDER]7ZipContextApp.exe&quot; --compress &quot;%1&quot;" Type="string" /></RegistryKey>
+          </RegistryKey>
+        </RegistryKey>
       </Component>
 
     </DirectoryRef>
@@ -72,6 +104,7 @@
       <ComponentRef Id="DesktopApp" />
       <ComponentRef Id="RegisterScript" />
       <ComponentRef Id="UnregisterScript" />
+      <ComponentRef Id="ClassicContextMenu" />
     </ComponentGroup>
 
     <ComponentGroup Id="AssetsComponents">
@@ -80,54 +113,30 @@
 
     <!-- Custom Actions for registration -->
     <CustomAction Id="SetRegisterCmd" Property="RegisterSparsePackage"
-                  Value="&quot;powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -File &quot;[INSTALLFOLDER]register.ps1&quot; &quot;[INSTALLFOLDER].&quot;" />
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -NonInteractive -File &quot;[INSTALLFOLDER]register.ps1&quot; &quot;[INSTALLFOLDER].&quot;" />
 
     <CustomAction Id="RegisterSparsePackage"
                   DllEntry="WixQuietExec64"
                   BinaryRef="Wix4UtilCA_X64"
                   Execute="deferred"
                   Impersonate="yes"
-                  Return="check" />
+                  Return="ignore" />
 
     <CustomAction Id="SetUnregisterCmd" Property="UnregisterSparsePackage"
-                  Value="&quot;powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -File &quot;[INSTALLFOLDER]unregister.ps1&quot;" />
+                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -ExecutionPolicy Bypass -NoProfile -NonInteractive -File &quot;[INSTALLFOLDER]unregister.ps1&quot; &quot;[INSTALLFOLDER].&quot;" />
 
     <CustomAction Id="UnregisterSparsePackage"
                   DllEntry="WixQuietExec64"
                   BinaryRef="Wix4UtilCA_X64"
                   Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
-    <CustomAction Id="SetRestartExplorerInstall" Property="RestartExplorerInstall"
-                  Value="&quot;powershell.exe&quot; -Command &quot;Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep 1; Start-Process explorer&quot;" />
-
-    <CustomAction Id="RestartExplorerInstall"
-                  DllEntry="WixQuietExec64"
-                  BinaryRef="Wix4UtilCA_X64"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
-    <CustomAction Id="SetRestartExplorerUninstall" Property="RestartExplorerUninstall"
-                  Value="&quot;powershell.exe&quot; -Command &quot;Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep 1; Start-Process explorer&quot;" />
-
-    <CustomAction Id="RestartExplorerUninstall"
-                  DllEntry="WixQuietExec64"
-                  BinaryRef="Wix4UtilCA_X64"
-                  Execute="deferred"
-                  Impersonate="no"
+                  Impersonate="yes"
                   Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="SetUnregisterCmd" Before="UnregisterSparsePackage" Condition="REMOVE=&quot;ALL&quot;" />
       <Custom Action="UnregisterSparsePackage" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="SetRestartExplorerUninstall" Before="RestartExplorerUninstall" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="RestartExplorerUninstall" After="UnregisterSparsePackage" Condition="REMOVE=&quot;ALL&quot;" />
       <Custom Action="SetRegisterCmd" Before="RegisterSparsePackage" Condition="NOT REMOVE" />
       <Custom Action="RegisterSparsePackage" After="InstallFiles" Condition="NOT REMOVE" />
-      <Custom Action="SetRestartExplorerInstall" Before="RestartExplorerInstall" Condition="NOT REMOVE" />
-      <Custom Action="RestartExplorerInstall" After="RegisterSparsePackage" Condition="NOT REMOVE" />
     </InstallExecuteSequence>
 
     <!-- Feature -->

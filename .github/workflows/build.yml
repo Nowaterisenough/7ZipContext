@@ -49,6 +49,9 @@ jobs:
       - name: Test release version calculation
         run: ./tests/ReleaseVersionTests.ps1
 
+      - name: Test optional shell registration without changing system policy
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/RegistrationTests.ps1
+
       - name: Calculate release version
         id: version
         run: ./scripts/ci/Get-ReleaseVersion.ps1
@@ -95,6 +98,11 @@ jobs:
             Stop-Transcript
           }
 
+      - name: Install and uninstall the MSI on the isolated runner
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: ./tests/InstallerTests.ps1 -Package "build/release-packages/7ZipContext-$env:RELEASE_VERSION-windows-x64.msi" -AllowMachineInstall
+
       - name: Upload release packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -114,6 +122,7 @@ jobs:
             build/*-tests.log
             build/deploy.log
             build/package.log
+            build/msi-*.log
             build/update-helper-tests-*/*.log
             build/update-helper-tests-*/update-result.json
           if-no-files-found: ignore
