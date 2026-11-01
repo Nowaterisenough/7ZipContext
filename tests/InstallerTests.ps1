@@ -23,6 +23,15 @@ if ($properties.UpgradeCode -ne '{A1B2C3D4-0000-4B3A-9E1F-000000000001}') { thro
 $uninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + $properties.ProductCode
 if (Test-Path -LiteralPath $uninstallKey) { throw 'This product is already installed.' }
 $certificates = @(Get-ChildItem Cert:\CurrentUser\My,Cert:\CurrentUser\Root | Where-Object Subject -EQ 'CN=7ZipContext' | Select-Object -ExpandProperty Thumbprint | Sort-Object)
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class InstallerIconProbe {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint ExtractIconEx(string file, int index, IntPtr large, IntPtr small, uint count);
+}
+'@
 function Invoke-Installer([string[]]$Arguments,[string]$LogName) {
     $log = Join-Path $repository ('build/'+$LogName)
     $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/msiexec.exe') -ArgumentList ($Arguments + @('/qn','/norestart','/L*V',('"'+$log+'"'))) -WindowStyle Hidden -PassThru
@@ -43,6 +52,19 @@ try {
     }
     $shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) '7-Zip Context.lnk'
     if (-not (Test-Path -LiteralPath $shortcut)) { throw 'Start-menu shortcut was not installed.' }
+    if ([InstallerIconProbe]::ExtractIconEx($executable,-1,[IntPtr]::Zero,[IntPtr]::Zero,0) -ne 1) { throw 'Installed executable has no application icon.' }
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    try { $iconLocation = $shortcutShell.CreateShortcut($shortcut).IconLocation }
+    finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcutShell) }
+    $iconMatch = [regex]::Match($iconLocation,'^(.+),(-?\d+)$')
+    if (-not $iconMatch.Success) { throw 'Installed shortcut has no explicit icon.' }
+    $iconPath = [Environment]::ExpandEnvironmentVariables($iconMatch.Groups[1].Value.Trim('"'))
+    if (-not (Test-Path -LiteralPath $iconPath -PathType Leaf) -or [InstallerIconProbe]::ExtractIconEx($iconPath,-1,[IntPtr]::Zero,[IntPtr]::Zero,0) -ne 1) { throw 'Shortcut icon cannot be read by Windows.' }
+    foreach ($logo in @{ 'StoreLogo.png' = 50; 'Square44x44Logo.png' = 44; 'Square150x150Logo.png' = 150 }.GetEnumerator()) {
+        $image = [Drawing.Image]::FromFile((Join-Path $target ('Assets/'+$logo.Key)))
+        try { if ($image.Width -ne $logo.Value -or $image.Height -ne $logo.Value) { throw "Incorrect package logo dimensions: $($logo.Key)" } }
+        finally { $image.Dispose() }
+    }
     if (Test-Path -LiteralPath (Join-Path $target '7ZipContext.pfx')) { throw 'Installer exported a private key.' }
     $smokeInfo = New-Object Diagnostics.ProcessStartInfo
     $smokeInfo.FileName = $executable; $smokeInfo.Arguments = '--smoke-test'; $smokeInfo.WorkingDirectory = $target
@@ -60,4 +82,4 @@ if (Test-Path -LiteralPath $uninstallKey) { throw 'Uninstall left its Windows pr
 if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Classes\*\shell\7ZipContext') { throw 'Uninstall left its context menu behind.' }
 if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Classes\Directory\shell\7ZipContext') { throw 'Uninstall left its folder context menu behind.' }
 if (Test-Path -LiteralPath $shortcut) { throw 'Uninstall left its Start-menu shortcut behind.' }
-Write-Output 'MSI installation, installed startup, context-menu registration and uninstall tests passed.'
+Write-Output 'MSI installation, installed startup, application/shortcut icons, context-menu registration and uninstall tests passed.'

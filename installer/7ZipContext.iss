@@ -24,6 +24,7 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\7ZipContextApp.exe
+SetupIconFile=..\Package\Assets\icon.ico
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -37,7 +38,7 @@ english.BeveledLabel=7-Zip Context Menu Extension
 Source: "..\build\install\*"; DestDir: "{app}"; Excludes: "*.pdb,*.pfx,*.log,*.previous-*.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\7-Zip Context"; Filename: "{app}\7ZipContextApp.exe"
+Name: "{group}\7-Zip Context"; Filename: "{app}\7ZipContextApp.exe"; IconFilename: "{app}\Assets\icon.ico"; IconIndex: 0
 
 [Registry]
 Root: HKLM; Subkey: "Software\Classes\*\shell\7ZipContext"; ValueType: string; ValueName: "MUIVerb"; ValueData: "7-Zip Context"; Flags: uninsdeletekey

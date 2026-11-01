@@ -243,12 +243,17 @@ void ApplyArchiveTheme(QApplication& app) {
     app.setStyleSheet(app.styleSheet() + theme::WorkbenchStyleSheet(MagpieAccent()) + ShellStyle() + desktop::type::StyleSheet());
 }
 QIcon ArchiveIcon() {
-    QPixmap image(64, 64); image.fill(Qt::transparent);
-    QPainter painter(&image); painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(Qt::NoPen); painter.setBrush(QColor(theme::Text)); painter.drawRoundedRect(QRectF(5, 5, 54, 54), 10, 10);
-    QFont font(QStringLiteral("Microsoft YaHei UI")); font.setPixelSize(42); font.setBold(true); painter.setFont(font);
-    painter.setPen(QColor(theme::Canvas)); painter.drawText(image.rect(), Qt::AlignCenter, QStringLiteral("7"));
-    painter.end(); return QIcon(image);
+    QIcon icon;
+    for (const int size : {16, 20, 24, 32, 40, 44, 48, 50, 64, 128, 150, 256}) {
+        QPixmap image(size, size); image.fill(Qt::transparent);
+        QPainter painter(&image); painter.setRenderHint(QPainter::Antialiasing);
+        painter.scale(size / 64.0, size / 64.0);
+        painter.setPen(Qt::NoPen); painter.setBrush(QColor(theme::Text)); painter.drawRoundedRect(QRectF(5, 5, 54, 54), 10, 10);
+        QFont font(QStringLiteral("Microsoft YaHei UI")); font.setPixelSize(42); font.setBold(true); painter.setFont(font);
+        painter.setPen(QColor(theme::Canvas)); painter.drawText(QRectF(0, 0, 64, 64), Qt::AlignCenter, QStringLiteral("7"));
+        painter.end(); icon.addPixmap(image);
+    }
+    return icon;
 }
 
 ArchiveWindow::ArchiveWindow(ArchiveController& controller, bool compact) : controller_(controller), compact_(compact) {

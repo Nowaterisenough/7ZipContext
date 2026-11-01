@@ -48,7 +48,7 @@ if ($MsvcRuntime) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $name))) { throw "Missing MSVC runtime: $name" }
     }
 }
-$required = @('7ZipContextApp.exe','7ZipContext.dll','Apply-Update.ps1','Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Svg.dll','plugins/platforms/qwindows.dll','AppxManifest.xml','Assets/icon.png')
+$required = @('7ZipContextApp.exe','7ZipContext.dll','Apply-Update.ps1','Qt6Core.dll','Qt6Gui.dll','Qt6Widgets.dll','Qt6Network.dll','Qt6Svg.dll','plugins/platforms/qwindows.dll','AppxManifest.xml','Assets/icon.png','Assets/icon.ico','Assets/StoreLogo.png','Assets/Square44x44Logo.png','Assets/Square150x150Logo.png')
 foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $stage $relative) -PathType Leaf)) { throw "Missing release runtime file: $relative" }
 }

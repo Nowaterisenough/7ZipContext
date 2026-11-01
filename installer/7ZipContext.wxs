@@ -16,6 +16,8 @@
            Compressed="yes">
 
     <SummaryInformation Description="7-Zip Context Menu Extension for Windows 11" />
+    <Icon Id="ApplicationIcon.ico" SourceFile="$(var.StagingDir)\Assets\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ApplicationIcon.ico" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
@@ -47,7 +49,7 @@
       <Component Id="DesktopApp" Guid="A1B2C3D4-3333-4B3A-9E1F-000000000004" Bitness="always64">
         <File Id="DesktopEXE" Source="$(var.StagingDir)\7ZipContextApp.exe" KeyPath="yes">
           <Shortcut Id="DesktopStartMenu" Directory="ProgramMenuFolder" Name="7-Zip Context"
-                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" Icon="ApplicationIcon.ico" IconIndex="0" />
         </File>
       </Component>
 
