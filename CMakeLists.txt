@@ -402,6 +402,16 @@ if(BUILD_TESTING)
     add_test(NAME online_updates COMMAND ${CMAKE_COMMAND}
         -DTEST_EXECUTABLE=$<TARGET_FILE:UpdateTests> -DTEST_LOG=update-tests.log
         -P ${CMAKE_SOURCE_DIR}/tests/RunUiTests.cmake)
+    qt_add_executable(DesktopLifecycleTests tests/DesktopLifecycleTests.cpp)
+    set_target_properties(DesktopLifecycleTests PROPERTIES AUTOMOC ON WIN32_EXECUTABLE FALSE)
+    target_compile_definitions(DesktopLifecycleTests PRIVATE UNICODE _UNICODE NOMINMAX)
+    target_link_libraries(DesktopLifecycleTests PRIVATE ArchiveUi SevenZipEngine Qt6::Test)
+    if(MSVC)
+        target_compile_options(DesktopLifecycleTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME desktop_lifecycle COMMAND ${CMAKE_COMMAND}
+        -DTEST_EXECUTABLE=$<TARGET_FILE:DesktopLifecycleTests> -DTEST_LOG=desktop-lifecycle-tests.log
+        -P ${CMAKE_SOURCE_DIR}/tests/RunUiTests.cmake)
     add_executable(UpdateSmokeFailure WIN32 tests/UpdateSmokeFailure.cpp "${CMAKE_BINARY_DIR}/generated/AppVersion.rc")
     if(MINGW)
         target_link_options(UpdateSmokeFailure PRIVATE -static)

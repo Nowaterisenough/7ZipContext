@@ -1,4 +1,5 @@
 #include "ui/ArchiveWindow.h"
+#include "ui/ApplicationExit.h"
 #include "AppBuild.h"
 #include <QApplication>
 #include <QDir>
@@ -140,7 +141,7 @@ int main(int argc, char** argv) {
     };
     QObject::connect(show, &QAction::triggered, &mainWindow, showMain);
     QObject::connect(quit, &QAction::triggered, &controller, &ArchiveController::requestQuit);
-    QObject::connect(&controller, &ArchiveController::quitReady, &app, &QApplication::quit);
+    ConnectApplicationExit(controller, app);
     QObject::connect(&popup, &ArchiveWindow::expandRequested, &mainWindow, [&](const QString& page) {
         mainWindow.navigate(page); showMain();
     });
