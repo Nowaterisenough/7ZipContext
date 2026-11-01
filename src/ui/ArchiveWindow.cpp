@@ -41,6 +41,7 @@ namespace theme = desktop::theme;
 namespace {
 QString Q(const std::wstring& text) { return QString::fromStdWString(text); }
 enum ItemRole { Detail = Qt::UserRole + 1, Badge, Ink, Path, ListIds, SearchText };
+constexpr int PasswordRowHeight = 44;
 QColor MagpieAccent() { return QColor("#a5b4fc"); }
 
 QString ShellStyle() {
@@ -152,21 +153,25 @@ QWidget* Page(QVBoxLayout*& layout, const char* name) {
 }
 class ArchiveDelegate final : public QStyledItemDelegate {
 public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-    QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override { return {300, 66}; }
+    explicit ArchiveDelegate(QObject* parent = nullptr, bool dense = false) : QStyledItemDelegate(parent), dense_(dense) {}
+    QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override { return {300, dense_ ? PasswordRowHeight : 66}; }
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         painter->save(); painter->setRenderHint(QPainter::Antialiasing);
         painter->fillRect(option.rect, option.state & QStyle::State_Selected ? theme::RaisedColor(option.widget) : theme::SurfaceColor(option.widget));
-        QRectF badge(option.rect.left() + 15, option.rect.top() + 15, 36, 36);
-        painter->setPen(Qt::NoPen); painter->setBrush(theme::RaisedColor(option.widget)); painter->drawRoundedRect(badge, 7, 7);
-        auto font = desktop::type::Font(10.5); painter->setFont(font);
-        painter->setPen(QColor(theme::Text)); painter->drawText(badge, Qt::AlignCenter, index.data(Badge).toString());
-        const QRect title(option.rect.left() + 65, option.rect.top() + 9, option.rect.width() - 82, 23);
-        font = desktop::type::RowTitle(); painter->setFont(font); painter->setPen(QColor(theme::Text));
+        if (!dense_) {
+            const QRectF badge(option.rect.left() + 15, option.rect.top() + 15, 36, 36);
+            painter->setPen(Qt::NoPen); painter->setBrush(theme::RaisedColor(option.widget)); painter->drawRoundedRect(badge, 7, 7);
+            painter->setFont(desktop::type::Font(10.5));
+            painter->setPen(QColor(theme::Text)); painter->drawText(badge, Qt::AlignCenter, index.data(Badge).toString());
+        }
+        const int textLeft = dense_ ? 12 : 65;
+        const QRect title(option.rect.left() + textLeft, option.rect.top() + (dense_ ? 3 : 9), option.rect.width() - textLeft - 17, dense_ ? 20 : 23);
+        painter->setFont(desktop::type::RowTitle()); painter->setPen(QColor(theme::Text));
         painter->drawText(title, Qt::AlignLeft | Qt::AlignVCenter, painter->fontMetrics().elidedText(index.data().toString(), Qt::ElideMiddle, title.width()));
         painter->setFont(desktop::type::Detail());
         painter->setPen(index.data(Ink).value<QColor>());
-        painter->drawText(title.translated(0, 24), Qt::AlignLeft | Qt::AlignVCenter,
+        const QRect detail = dense_ ? QRect(title.left(), option.rect.top() + 23, title.width(), 17) : title.translated(0, 24);
+        painter->drawText(detail, Qt::AlignLeft | Qt::AlignVCenter,
             painter->fontMetrics().elidedText(index.data(Detail).toString(), Qt::ElideRight, title.width()));
         painter->setPen(QColor("#2c2c32")); painter->drawLine(option.rect.bottomLeft() + QPoint(15, 0), option.rect.bottomRight() - QPoint(15, 0));
         if (option.state & QStyle::State_HasFocus) {
@@ -175,6 +180,8 @@ public:
         }
         painter->restore();
     }
+private:
+    bool dense_;
 };
 class RoundedArchiveList final : public QListWidget {
 protected:
@@ -491,7 +498,7 @@ QWidget* ArchiveWindow::makePasswordsPage() {
     passwordQueue_ = new QStackedWidget; passwordQueue_->setMinimumHeight(compact_ ? 132 : 164);
     passwordQueue_->addWidget(Empty(QStringLiteral("还没有密码单"), QStringLiteral("导入文本文件或手动添加，每行一个密码")));
     passwordLists_ = new RoundedArchiveList; passwordLists_->setObjectName(QStringLiteral("passwordLists"));
-    passwordLists_->setFrameShape(QFrame::NoFrame); passwordLists_->setItemDelegate(new ArchiveDelegate(passwordLists_));
+    passwordLists_->setFrameShape(QFrame::NoFrame); passwordLists_->setItemDelegate(new ArchiveDelegate(passwordLists_, true));
     passwordLists_->setUniformItemSizes(true); passwordLists_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     passwordQueue_->addWidget(passwordLists_); listLayout->addWidget(passwordQueue_); layout->addWidget(listCard);
     passwordSourceRow_ = new QWidget;
@@ -581,7 +588,7 @@ void ArchiveWindow::refreshPasswords() {
         }
         const auto description = (notes.isEmpty() ? QString{} : notes.join(QStringLiteral("；")) + QStringLiteral(" · ")) +
             QStringLiteral("来源：%1 · %2").arg(names.join(QStringLiteral("、")), entry.enabled ? QStringLiteral("已启用") : QStringLiteral("已停用"));
-        AddItem(passwordLists_, entry.value, description, entry.enabled ? QStringLiteral("✓") : QStringLiteral("—"),
+        AddItem(passwordLists_, entry.value, description, {},
                 entry.enabled ? QColor(theme::Success) : theme::MutedColor(this), {});
         const int row = passwordLists_->count() - 1; auto* item = passwordLists_->item(row);
         const auto complete = entry.value + '\n' + descriptions.join('\n');
@@ -596,7 +603,7 @@ void ArchiveWindow::refreshPasswords() {
     const int previousSource = passwordSource_->findData(id);
     if (previousSource >= 0) passwordSource_->setCurrentIndex(previousSource);
     passwordQueue_->setCurrentIndex(passwordLists_->count() ? 1 : 0);
-    const int height = passwordLists_->count() ? std::min(passwordLists_->count(), compact_ ? 3 : 5) * 66 : compact_ ? 132 : 164;
+    const int height = passwordLists_->count() ? std::min(passwordLists_->count(), compact_ ? 3 : 5) * PasswordRowHeight : compact_ ? 132 : 164;
     passwordQueue_->setFixedHeight(height);
     passwordQueue_->parentWidget()->setFixedHeight(height + 2);
     passwordSummary_->setText(QStringLiteral("共 %1 个密码 · %2 份密码单 · 已启用 %3 个").arg(library.uniquePasswords().size()).arg(library.lists().size()).arg(library.enabledPasswords().size()));
