@@ -2,223 +2,170 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a release (main branch only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  BUILD_TYPE: RelWithDebInfo
+  BUILD_TYPE: Release
+  QT_VERSION: '6.8.3'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
 
 jobs:
   build:
-    runs-on: windows-latest
+    name: Windows x64 build, tests and packages
+    runs-on: windows-2022
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout source and pinned 7-Zip submodule
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Test release version calculation
+        run: ./tests/ReleaseVersionTests.ps1
+
+      - name: Calculate release version
+        id: version
+        run: ./scripts/ci/Get-ReleaseVersion.ps1
+
+      - name: Install Qt for MSVC 2022
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-D7ZIPCONTEXT_VERSION=$env:RELEASE_VERSION" "-D7ZIPCONTEXT_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY"
+
+      - name: Build
+        run: cmake --build build --config $env:BUILD_TYPE --parallel 4
+
+      - name: Test archive engine and desktop workflows
+        run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure --timeout 120
+
+      - name: Deploy application and Qt runtime
+        run: cmake --install build --config $env:BUILD_TYPE --prefix build/ci-install
+
+      - name: Test update installation and rollback with Windows PowerShell
+        run: ./tests/UpdateHelperTests.ps1 -RuntimeDirectory build/ci-install -FailureExecutable "build/$env:BUILD_TYPE/UpdateSmokeFailure.exe"
+
+      - name: Install .NET for the pinned WiX tool
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Package and verify MSI and portable ZIP
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/ci/Build-WindowsPackages.ps1 -Version $env:RELEASE_VERSION -InstallDir build/ci-install -OutputDir build/release -MsvcRuntime
+
+      - name: Upload release packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-x64-packages
+          path: build/release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-x64-test-logs
+          path: |
+            build/Testing/Temporary/*.log
+            build/*-tests.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: >-
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
-
+    concurrency:
+      group: release-${{ needs.build.outputs.tag }}
+      cancel-in-progress: false
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 0  # Need full history for version calculation
+      - name: Download verified packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-x64-packages
+          path: release
 
-    - name: Calculate Version
-      id: version
-      shell: bash
-      run: |
-        # Get commit count as patch version
-        COMMIT_COUNT=$(git rev-list --count HEAD)
-        VERSION="1.0.${COMMIT_COUNT}"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Version: $VERSION"
+      - name: Verify artifact checksums
+        working-directory: release
+        run: sha256sum --check SHA256SUMS.txt
 
-    - name: Setup MSVC
-      uses: microsoft/setup-msbuild@v2
-
-    - name: Setup CMake
-      uses: lukka/get-cmake@latest
-
-    - name: Configure CMake
-      run: cmake -B build -G "Visual Studio 17 2022" -A x64
-
-    - name: Build
-      run: cmake --build build --config ${{ env.BUILD_TYPE }}
-
-    - name: Install WiX Toolset
-      run: dotnet tool install --global wix
-
-    - name: Add WiX Extensions
-      run: |
-        wix extension add WixToolset.UI.wixext
-        wix extension add WixToolset.Util.wixext
-
-    - name: Update WiX Version
-      shell: pwsh
-      run: |
-        $version = "${{ steps.version.outputs.version }}.0"
-        $wxsFile = "installer/7ZipContext.wxs"
-        $content = Get-Content $wxsFile -Raw
-        $content = $content -replace 'Version="1\.0\.0\.0"', "Version=`"$version`""
-        Set-Content $wxsFile $content
-
-    - name: Verify Build Output
-      shell: pwsh
-      run: |
-        $dllPath = "build/${{ env.BUILD_TYPE }}/7ZipContext.dll"
-        if (Test-Path $dllPath) {
-          Write-Host "DLL found: $dllPath"
-          Get-Item $dllPath | Format-List
-        } else {
-          Write-Error "DLL not found at $dllPath"
-          Get-ChildItem -Path "build" -Recurse -Name "*.dll"
-          exit 1
-        }
-
-    - name: Build MSI
-      shell: pwsh
-      run: |
-        $sourceDir = (Get-Location).Path
-        $buildDir = Join-Path $sourceDir "build\${{ env.BUILD_TYPE }}"
-        $dllPath = Join-Path $buildDir "7ZipContext.dll"
-
-        Write-Host "SourceDir: $sourceDir"
-        Write-Host "BuildDir: $buildDir"
-        Write-Host "DLL Path: $dllPath"
-
-        # Verify DLL exists before WiX build
-        if (-not (Test-Path $dllPath)) {
-            Write-Error "DLL not found at: $dllPath"
-            Write-Host "Contents of build directory:"
-            Get-ChildItem -Path "build" -Recurse | Format-Table Name, Length, FullName
+      - name: Refuse to reuse a tag belonging to another commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          response=$(mktemp)
+          error=$(mktemp)
+          if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" > "$response" 2> "$error"; then
+            type=$(jq -r '.object.type' "$response")
+            sha=$(jq -r '.object.sha' "$response")
+            while [ "$type" = tag ]; do
+              gh api "repos/$GH_REPO/git/tags/$sha" > "$response"
+              type=$(jq -r '.object.type' "$response")
+              sha=$(jq -r '.object.sha' "$response")
+            done
+            test "$type" = commit && test "$sha" = "$RELEASE_COMMIT"
+          elif ! grep -q 'HTTP 404' "$error"; then
+            cat "$error" >&2
             exit 1
-        }
-        Write-Host "DLL verified: $(Get-Item $dllPath | Select-Object -ExpandProperty Length) bytes"
+          fi
 
-        # Create staging directory with all files needed for MSI
-        $stagingDir = "build\staging"
-        New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
-        New-Item -ItemType Directory -Path "$stagingDir\Assets" -Force | Out-Null
-
-        # Copy all files to staging directory
-        Copy-Item "$buildDir\7ZipContext.dll" "$stagingDir\" -Force
-        Copy-Item "Package\AppxManifest.xml" "$stagingDir\" -Force
-        Copy-Item "installer\dummy.exe" "$stagingDir\" -Force
-        Copy-Item "installer\register.ps1" "$stagingDir\" -Force
-        Copy-Item "installer\unregister.ps1" "$stagingDir\" -Force
-        Copy-Item "Package\Assets\icon.png" "$stagingDir\Assets\" -Force
-
-        Write-Host "`nStaging directory contents:"
-        Get-ChildItem -Path $stagingDir -Recurse | Format-Table Name, Length
-
-        New-Item -ItemType Directory -Path "build\installer" -Force | Out-Null
-
-        # Run WiX with staging directory as source
-        Write-Host "`n=== Running WiX Build ==="
-        $stagingFullPath = (Resolve-Path $stagingDir).Path
-        $installerDir = (Resolve-Path "installer").Path
-        Write-Host "Staging path: $stagingFullPath"
-
-        # Create intermediate folder to inspect cabinet
-        $intermediateDir = "build\wixobj"
-        New-Item -ItemType Directory -Path $intermediateDir -Force | Out-Null
-
-        wix build installer/7ZipContext.wxs `
-          -d "StagingDir=$stagingFullPath" `
-          -d "InstallerDir=$installerDir" `
-          -ext WixToolset.UI.wixext `
-          -ext WixToolset.Util.wixext `
-          -arch x64 `
-          -intermediateFolder $intermediateDir `
-          -o build/installer/7ZipContext-${{ steps.version.outputs.version }}-x64.msi
-
-        Write-Host "`nIntermediate files:"
-        Get-ChildItem -Path $intermediateDir -Recurse | Format-Table Name, Length, FullName
-
-        # Check if cab file exists in intermediate folder
-        $cabFiles = Get-ChildItem -Path $intermediateDir -Filter "*.cab" -Recurse
-        if ($cabFiles) {
-            foreach ($cab in $cabFiles) {
-                Write-Host "CAB file: $($cab.FullName), Size: $($cab.Length) bytes"
-            }
-        } else {
-            Write-Host "No CAB files found in intermediate folder"
-        }
-
-        # Verify MSI size makes sense (should be > 1.5MB with 2MB DLL compressed)
-        $msiSize = (Get-Item "build/installer/7ZipContext-${{ steps.version.outputs.version }}-x64.msi").Length
-        Write-Host "`nMSI file size: $msiSize bytes"
-        if ($msiSize -lt 1500000) {
-            Write-Warning "MSI file seems too small! DLL may not be included."
-
-            # Try to extract and inspect the MSI
-            Write-Host "`nExtracting MSI to inspect contents..."
-            $extractDir = "build\msi_extract"
-            New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-            msiexec /a "build/installer/7ZipContext-${{ steps.version.outputs.version }}-x64.msi" /qn TARGETDIR="$((Resolve-Path $extractDir).Path)"
-            Start-Sleep -Seconds 5
-            Write-Host "Extracted MSI contents:"
-            Get-ChildItem -Path $extractDir -Recurse | Format-Table Name, Length, FullName
-        }
-
-    - name: Verify MSI Contents
-      shell: pwsh
-      run: |
-        $msiPath = "build/installer/7ZipContext-${{ steps.version.outputs.version }}-x64.msi"
-        Write-Host "MSI file info:"
-        Get-Item $msiPath | Format-List Name, Length
-
-        Write-Host "`n=== Listing MSI Contents ==="
-        # Use Windows Installer COM to list files in MSI
-        $installer = New-Object -ComObject WindowsInstaller.Installer
-        $database = $installer.OpenDatabase($msiPath, 0)
-
-        # Query File table
-        $view = $database.OpenView("SELECT File, FileName, FileSize FROM File")
-        $view.Execute()
-
-        Write-Host "`nFiles in MSI:"
-        $record = $view.Fetch()
-        $fileCount = 0
-        while ($record -ne $null) {
-            $fileId = $record.StringData(1)
-            $fileName = $record.StringData(2)
-            $fileSize = $record.IntegerData(3)
-            # FileName format can be "shortname|longname"
-            if ($fileName -match '\|') {
-                $fileName = $fileName.Split('|')[1]
-            }
-            Write-Host "  - $fileName (ID: $fileId, Size: $fileSize bytes)"
-            $fileCount++
-            $record = $view.Fetch()
-        }
-
-        Write-Host "`nTotal files: $fileCount"
-
-        # Verify critical files exist by checking if DLL was in the list
-        $view = $database.OpenView("SELECT File FROM File WHERE File = 'SevenZipContextDLL'")
-        $view.Execute()
-        $record = $view.Fetch()
-        if ($record -eq $null) {
-            Write-Error "CRITICAL: 7ZipContext.dll not found in MSI!"
-            exit 1
-        }
-        Write-Host "`n7ZipContext.dll verified in MSI."
-
-    - name: Upload MSI Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: 7ZipContext-${{ steps.version.outputs.version }}-x64
-        path: build/installer/*.msi
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ steps.version.outputs.version }}
-        name: Release v${{ steps.version.outputs.version }}
-        files: build/installer/*.msi
-        generate_release_notes: true
-        draft: false
-        make_latest: true
+      - name: Publish MSI, portable ZIP and SHA-256 checksums
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ needs.build.outputs.commit }}
+          name: 7-Zip Context v${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          make_latest: true
+          files: |
+            release/*.msi
+            release/*.zip
+            release/build-info.json
+            release/SHA256SUMS.txt
