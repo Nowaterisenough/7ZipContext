@@ -11,5 +11,6 @@ inline QColor CanvasColor(const QWidget* widget) { return QColor(UsesTrayPalette
 inline QColor SurfaceColor(const QWidget* widget) { return QColor(UsesTrayPalette(widget) ? "#25262c" : Surface); }
 inline QColor RaisedColor(const QWidget* widget) { return QColor(UsesTrayPalette(widget) ? "#2e2f36" : Raised); }
 inline QColor BorderColor(const QWidget* widget) { return QColor(UsesTrayPalette(widget) ? "#323338" : Border); }
+inline QColor DividerColor(const QWidget* widget) { return QColor(UsesTrayPalette(widget) ? "#323338" : Divider); }
 inline QColor MutedColor(const QWidget* widget) { return QColor(UsesTrayPalette(widget) ? "#9c9ca6" : Muted); }
 }

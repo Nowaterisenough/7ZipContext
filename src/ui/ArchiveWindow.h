@@ -15,7 +15,7 @@ class QProgressBar;
 class QPushButton;
 class QStackedWidget;
 class SpeedChart;
-namespace desktop { class MagpieShell; class SegmentedTabBar; class ToggleSwitch; }
+namespace desktop { class MagpieShell; class SegmentedTabBar; }
 
 void ApplyArchiveTheme(QApplication& app);
 QIcon ArchiveIcon();
@@ -36,6 +36,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
     bool event(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
@@ -52,6 +53,10 @@ private:
     void refreshTasks();
     void syncOptions();
     void syncBusy();
+    void syncQueueActions();
+    void syncOutputAction();
+    void syncStatus();
+    void setDropActive(bool active);
     void syncProgress();
     void run(ArchiveController::Operation operation);
     void openOutput();
@@ -78,7 +83,7 @@ private:
     QLineEdit *extractPassword_ = nullptr, *compressPassword_ = nullptr, *archiveName_ = nullptr;
     QComboBox* volume_ = nullptr;
     desktop::SegmentedTabBar *format_ = nullptr, *level_ = nullptr, *extractMode_ = nullptr;
-    desktop::ToggleSwitch *hideOnBlur_ = nullptr, *rememberGeometry_ = nullptr, *autoNested_ = nullptr;
+    desktop::SegmentedTabBar *hideOnBlur_ = nullptr, *rememberGeometry_ = nullptr, *autoNested_ = nullptr;
     QList<QWidget*> editable_;
     QPushButton *pause_ = nullptr, *cancel_ = nullptr;
     QLabel *taskState_ = nullptr, *processed_ = nullptr, *speed_ = nullptr, *percent_ = nullptr, *jobs_ = nullptr;
@@ -90,10 +95,9 @@ private:
     QStackedWidget* passwordQueue_ = nullptr;
     QLabel *passwordSummary_ = nullptr, *passwordError_ = nullptr;
     QPushButton *editPasswordList_ = nullptr, *togglePasswordList_ = nullptr, *removePasswordList_ = nullptr;
-    desktop::ToggleSwitch* autoPasswords_ = nullptr;
-    desktop::ToggleSwitch* organizeMedia_ = nullptr;
-    QPushButton* correctName_ = nullptr;
+    desktop::SegmentedTabBar* autoPasswords_ = nullptr;
+    desktop::SegmentedTabBar* organizeMedia_ = nullptr;
     QLabel *updateStatus_ = nullptr, *updateNotes_ = nullptr;
     QPushButton *checkUpdate_ = nullptr, *downloadUpdate_ = nullptr, *installUpdate_ = nullptr, *cancelUpdate_ = nullptr;
-    desktop::ToggleSwitch* autoUpdate_ = nullptr;
+    desktop::SegmentedTabBar* autoUpdate_ = nullptr;
 };

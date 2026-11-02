@@ -136,5 +136,5 @@ private:
     double speed_ = 0;
     QList<double> speeds_;
     std::chrono::steady_clock::time_point sampledAt_;
-    QString status_ = QStringLiteral("添加压缩包，自动识别真实格式与分卷。");
+    QString status_;
 };

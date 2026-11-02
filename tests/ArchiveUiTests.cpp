@@ -56,7 +56,15 @@ private slots:
                 QVERIFY(QFontInfo(label->font()).family().startsWith("Segoe UI"));
             }
         }
-        QCOMPARE(titles, 4); QCOMPARE(descriptions, 4);
+        QCOMPARE(titles, 4); QCOMPARE(descriptions, 0);
+        for (auto* label : window.pageWidget(0)->findChildren<QLabel*>()) {
+            if (!label->property("settingDescription").toBool()) continue;
+            ++descriptions;
+            QVERIFY(qAbs(label->font().pointSizeF() - 9.4875) < .05);
+            QCOMPARE(label->font().weight(), QFont::Normal);
+            QCOMPARE(label->palette().color(QPalette::WindowText), QColor("#b9b9c1"));
+        }
+        QVERIFY(descriptions > 0);
         QTextLayout text(QStringLiteral("7-Zip 设置"), desktop::type::Body());
         text.beginLayout(); text.createLine(); text.endLayout();
         bool latin = false, chinese = false;
@@ -135,22 +143,122 @@ private slots:
         QCOMPARE(noScroll.pixelColor(qRound((window.width() - 3) * noScroll.devicePixelRatio()),
                                      qRound(300 * noScroll.devicePixelRatio())), QColor("#1a1a1e"));
     }
+    void queueActionsFollowAvailableInputsAndSelection() {
+        QTemporaryDir temporary;
+        ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
+        ArchiveWindow window(controller); window.show();
+        for (const auto* name : {"removeArchive", "clearArchives", "correctName", "testArchives", "startExtraction", "removeSource", "clearSources", "startCompression", "openOutput"})
+            QVERIFY2(!window.findChild<QPushButton*>(name)->isEnabled(), name);
+        QVERIFY(!window.findChild<QLabel*>("operationStatus")->isVisible());
+        QVERIFY(window.findChild<QPushButton*>("chooseArchives")->isEnabled());
+
+        ArchivePlan archive; archive.input = L"example.bin"; archive.format = L"zip"; archive.needsRename = true;
+        controller.archives.push_back(archive); controller.sources.append(temporary.filePath("example.txt"));
+        emit controller.queueChanged();
+        for (const auto* name : {"removeArchive", "clearArchives", "correctName", "testArchives", "startExtraction", "removeSource", "clearSources", "startCompression"})
+            QVERIFY2(window.findChild<QPushButton*>(name)->isEnabled(), name);
+        window.findChild<QListWidget*>("archiveList")->setCurrentRow(-1);
+        QVERIFY(!window.findChild<QPushButton*>("removeArchive")->isEnabled());
+        QVERIFY(!window.findChild<QPushButton*>("correctName")->isEnabled());
+        QVERIFY(window.findChild<QPushButton*>("startExtraction")->isEnabled());
+        controller.archives[0].needsRename = false; emit controller.queueChanged();
+        QVERIFY(!window.findChild<QPushButton*>("correctName")->isEnabled());
+        controller.clear(false); controller.clear(true);
+        QVERIFY(!window.findChild<QPushButton*>("startExtraction")->isEnabled());
+        QVERIFY(!window.findChild<QPushButton*>("startCompression")->isEnabled());
+        controller.mediaInputs.append({temporary.path(), QStringLiteral("媒体"), {temporary.filePath("example.jpg")}});
+        emit controller.queueChanged();
+        QVERIFY(window.findChild<QPushButton*>("testArchives")->isEnabled());
+        QVERIFY(window.findChild<QPushButton*>("startExtraction")->isEnabled());
+        QVERIFY(!window.findChild<QPushButton*>("correctName")->isEnabled());
+
+        controller.tasks.append({QStringLiteral("已完成"), {}, temporary.path(), true}); emit controller.tasksChanged();
+        QVERIFY(window.findChild<QPushButton*>("openOutput")->isEnabled());
+        controller.tasks.append({QStringLiteral("检测结果"), {}, {}, true}); emit controller.tasksChanged();
+        window.findChild<QListWidget*>("taskList")->setCurrentRow(1);
+        QVERIFY(!window.findChild<QPushButton*>("openOutput")->isEnabled());
+    }
+    void compactChoicesFitTheirLabelsAndViewport() {
+        QTemporaryDir temporary;
+        ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
+        controller.hideOnBlur = false;
+        ArchiveWindow popup(controller, true); popup.resize(440, 700); popup.show();
+        for (const auto& page : {"extract", "compress", "general", "passwords", "about"}) {
+            popup.navigate(page); QCoreApplication::processEvents();
+            for (auto* tabs : popup.findChildren<QTabBar*>()) {
+                if (!tabs->isVisible()) continue;
+                QCOMPARE(tabs->width(), tabs->tabRect(tabs->count() - 1).right() + 1);
+            }
+            for (auto* scroll : popup.findChildren<QScrollArea*>()) {
+                if (!scroll->isVisible()) continue;
+                QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+                for (auto* control : scroll->widget()->findChildren<QWidget*>()) {
+                    if (!control->isVisible() || !(qobject_cast<QAbstractButton*>(control) || qobject_cast<QLineEdit*>(control) || qobject_cast<QTabBar*>(control))) continue;
+                    const auto origin = control->mapTo(scroll->viewport(), QPoint());
+                    QVERIFY2(origin.x() >= 0 && origin.x() + control->width() <= scroll->viewport()->width(), qPrintable(control->objectName()));
+                }
+            }
+        }
+        popup.navigate("general");
+        auto* choice = popup.findChild<QTabBar*>("hideOnBlur");
+        QSignalSpy changes(choice, &QTabBar::currentChanged);
+        QTest::mouseClick(choice, Qt::LeftButton, Qt::NoModifier, choice->tabRect(choice->currentIndex()).center());
+        QCOMPARE(changes.count(), 0);
+        choice->setFocus(Qt::TabFocusReason); QTest::keyClick(choice, Qt::Key_Right);
+        QCOMPARE(choice->currentIndex(), 1); QVERIFY(controller.hideOnBlur);
+        choice->setCurrentIndex(0);
+    }
+    void localFileDragHighlightsOnlyTheTargetQueue() {
+        QTemporaryDir temporary;
+        ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
+        ArchiveWindow window(controller); window.show();
+        QMimeData local; local.setUrls({QUrl::fromLocalFile(temporary.filePath("example.zip"))});
+        for (const auto& page : {"extract", "compress"}) {
+            window.navigate(page);
+            QDragEnterEvent enter(QPoint(30, 30), Qt::CopyAction, &local, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&window, &enter); QVERIFY(enter.isAccepted());
+            auto* target = window.findChild<QFrame*>(QString(page) == "compress" ? "sourceDropZone" : "archiveDropZone");
+            QVERIFY(target->property("dropActive").toBool());
+            QDragLeaveEvent leave; QApplication::sendEvent(&window, &leave);
+            QVERIFY(!target->property("dropActive").toBool());
+        }
+        QMimeData remote; remote.setUrls({QUrl("https://example.com/archive.zip")});
+        QDragEnterEvent enter(QPoint(30, 30), Qt::CopyAction, &remote, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&window, &enter); QVERIFY(!enter.isAccepted());
+    }
+    void searchHidesEmptyCardsAndRestoresThem() {
+        QTemporaryDir temporary;
+        ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
+        ArchiveWindow window(controller); window.show(); window.navigate("general");
+        auto* search = window.findChild<QLineEdit*>("searchSettings");
+        search->setText("no-such-setting");
+        for (auto* card : window.pageWidget(3)->findChildren<QFrame*>())
+            if (card->property("settingsCard").toBool()) QVERIFY(!card->isVisible());
+        QVERIFY(window.pageWidget(3)->findChild<QLabel*>("settingsNoResults")->isVisible());
+        search->clear();
+        for (auto* card : window.pageWidget(3)->findChildren<QFrame*>())
+            if (card->property("settingsCard").toBool()) QVERIFY(card->isVisible());
+        window.navigate("passwords"); search->setText("no-such-password");
+        QVERIFY(window.findChild<QWidget*>("passwordsNoResults")->isVisible());
+        QVERIFY(!window.findChild<QPushButton*>("removePasswords")->isEnabled());
+        search->clear(); QVERIFY(!window.findChild<QWidget*>("passwordsNoResults")->isVisible());
+    }
     void trayAndMainShareSettingsWithoutShowingHiddenWindows() {
         ArchiveController controller; controller.rememberGeometry = false; controller.organizeMedia = true;
         ArchiveWindow main(controller), popup(controller, true);
         main.show(); main.navigate("extract");
-        auto* media = main.findChild<QAbstractButton*>("organizeMedia"); QVERIFY(media);
-        QVERIFY(!main.findChild<QAbstractButton*>("autoNested")->isEnabled());
-        QTest::mouseClick(media, Qt::LeftButton); QVERIFY(!controller.organizeMedia);
-        QVERIFY(!popup.findChild<QAbstractButton*>("organizeMedia")->isChecked());
-        auto* recursive = main.findChild<QAbstractButton*>("autoNested"); QVERIFY(recursive);
-        const bool original = recursive->isChecked();
-        QTest::mouseClick(recursive, Qt::LeftButton);
+        auto* media = main.findChild<QTabBar*>("organizeMedia"); QVERIFY(media);
+        QVERIFY(!main.findChild<QTabBar*>("autoNested")->isEnabled());
+        QTest::mouseClick(media, Qt::LeftButton, Qt::NoModifier, media->tabRect(1 - media->currentIndex()).center()); QVERIFY(!controller.organizeMedia);
+        QVERIFY(!popup.findChild<QTabBar*>("organizeMedia")->currentIndex());
+        auto* recursive = main.findChild<QTabBar*>("autoNested"); QVERIFY(recursive);
+        const bool original = recursive->currentIndex() == 1;
+        QTest::mouseClick(recursive, Qt::LeftButton, Qt::NoModifier, recursive->tabRect(1 - recursive->currentIndex()).center());
         QCOMPARE(controller.autoNested, !original);
-        QCOMPARE(popup.findChild<QAbstractButton*>("autoNested")->isChecked(), !original);
-        QTest::mouseClick(recursive, Qt::LeftButton);
-        QTest::mouseClick(media, Qt::LeftButton); QVERIFY(controller.organizeMedia);
-        QVERIFY(popup.findChild<QAbstractButton*>("organizeMedia")->isChecked());
+        QCOMPARE(popup.findChild<QTabBar*>("autoNested")->currentIndex(), original ? 0 : 1);
+        QTest::mouseClick(recursive, Qt::LeftButton, Qt::NoModifier, recursive->tabRect(1 - recursive->currentIndex()).center());
+        QTest::mouseClick(media, Qt::LeftButton, Qt::NoModifier, media->tabRect(1 - media->currentIndex()).center()); QVERIFY(controller.organizeMedia);
+        QVERIFY(popup.findChild<QTabBar*>("organizeMedia")->currentIndex());
         QVERIFY(!popup.findChild<QTabBar*>("extractMode")->isEnabled());
         main.navigate("compress");
         auto* password = main.findChild<QLineEdit*>("compressPassword");
@@ -175,6 +283,14 @@ private slots:
         QApplication::sendEvent(&popup, &deactivate); QTest::qWait(20);
         QVERIFY(popup.isVisible());
         volume->hidePopup();
+        main.navigate("general"); popup.navigate("general");
+        controller.rememberGeometry = true; controller.notifyOptions(); QTest::qWait(320);
+        for (auto* window : {&main, &popup}) {
+            auto* choice = static_cast<desktop::SegmentedTabBar*>(window->findChild<QTabBar*>("rememberGeometry"));
+            QCOMPARE(choice->currentIndex(), 1);
+            QVERIFY(choice->IndicatorRect().center().x() > choice->tabRect(0).right());
+        }
+        controller.rememberGeometry = false; controller.notifyOptions();
         popup.hide(); controller.notifyOptions(); QVERIFY(!popup.isVisible());
     }
     void trayStaysOpenAfterLeavingAndLosingFocusWithLegacyPreferences() {
@@ -191,7 +307,7 @@ private slots:
         QVERIFY(!controller.hideOnBlur);
         ArchiveWindow popup(controller, true);
         QVERIFY(popup.windowFlags().testFlag(Qt::WindowStaysOnTopHint));
-        QVERIFY(!popup.findChild<QAbstractButton*>("hideOnBlur")->isChecked());
+        QVERIFY(!popup.findChild<QTabBar*>("hideOnBlur")->currentIndex());
         const QRect tray(100, 100, 24, 24);
         popup.toggleAtTray(tray); QTest::qWait(20); QVERIFY(popup.isVisible());
         QEvent leave(QEvent::Leave), deactivate(QEvent::WindowDeactivate);
@@ -253,10 +369,10 @@ private slots:
         QCOMPARE(controller.passwordLibrary().enabledCount(), 0);
         QCOMPARE(popup.findChild<QPushButton*>("togglePasswords")->text(), QStringLiteral("启用密码单"));
         QTest::mouseClick(main.findChild<QPushButton*>("togglePasswords"), Qt::LeftButton);
-        auto* automatic = main.findChild<QAbstractButton*>("autoPasswords"); QVERIFY(automatic);
-        QTest::mouseClick(automatic, Qt::LeftButton); QVERIFY(!controller.autoPasswords);
-        QVERIFY(!popup.findChild<QAbstractButton*>("autoPasswords")->isChecked());
-        QTest::mouseClick(automatic, Qt::LeftButton); QVERIFY(controller.autoPasswords);
+        auto* automatic = main.findChild<QTabBar*>("autoPasswords"); QVERIFY(automatic);
+        QTest::mouseClick(automatic, Qt::LeftButton, Qt::NoModifier, automatic->tabRect(1 - automatic->currentIndex()).center()); QVERIFY(!controller.autoPasswords);
+        QVERIFY(!popup.findChild<QTabBar*>("autoPasswords")->currentIndex());
+        QTest::mouseClick(automatic, Qt::LeftButton, Qt::NoModifier, automatic->tabRect(1 - automatic->currentIndex()).center()); QVERIFY(controller.autoPasswords);
 
         QTimer timeout;
         connect(&timeout, &QTimer::timeout, this, [] {
@@ -334,12 +450,12 @@ private slots:
         ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;
         ArchiveWindow main(controller), popup(controller, true);
         main.show(); main.navigate("about");
-        auto* automatic = main.findChild<QAbstractButton*>("autoCheckUpdates"); QVERIFY(automatic);
-        const auto previous = automatic->isChecked();
-        QTest::mouseClick(automatic, Qt::LeftButton);
+        auto* automatic = main.findChild<QTabBar*>("autoCheckUpdates"); QVERIFY(automatic);
+        const auto previous = automatic->currentIndex() == 1;
+        QTest::mouseClick(automatic, Qt::LeftButton, Qt::NoModifier, automatic->tabRect(1 - automatic->currentIndex()).center());
         QCOMPARE(controller.updates().autoCheck(), !previous);
-        QCOMPARE(popup.findChild<QAbstractButton*>("autoCheckUpdates")->isChecked(), !previous);
-        QTest::mouseClick(automatic, Qt::LeftButton);
+        QCOMPARE(popup.findChild<QTabBar*>("autoCheckUpdates")->currentIndex(), previous ? 0 : 1);
+        QTest::mouseClick(automatic, Qt::LeftButton, Qt::NoModifier, automatic->tabRect(1 - automatic->currentIndex()).center());
         QVERIFY(main.findChild<QPushButton*>("checkUpdate")->isEnabled());
         QVERIFY(!main.findChild<QPushButton*>("installUpdate")->isVisible());
         auto* search = main.findChild<QLineEdit*>("searchSettings"); search->setText(QStringLiteral("在线更新"));

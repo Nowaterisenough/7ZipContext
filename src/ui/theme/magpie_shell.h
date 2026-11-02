@@ -82,54 +82,6 @@ inline QIcon LineIcon(ShellIcon kind)
     return icon;
 }
 
-class ToggleSwitch final : public QAbstractButton {
-public:
-    explicit ToggleSwitch(QWidget *parent = nullptr) : QAbstractButton(parent) {
-        setCheckable(true);
-        setCursor(Qt::PointingHandCursor);
-        setFocusPolicy(Qt::StrongFocus);
-        setFixedSize(38, 24);
-        connect(&animation_, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) { position_ = value.toReal(); update(); });
-        connect(this, &QAbstractButton::toggled, this, [this](bool checked) {
-            if (isVisible()) motion::Animate(animation_, position_, checked ? 1.0 : 0.0, 140);
-            else { animation_.stop(); position_ = checked ? 1 : 0; update(); }
-        });
-    }
-    void SyncChecked(bool checked) {
-        if (isChecked() == checked) return;
-        QSignalBlocker block(this);
-        setChecked(checked); animation_.stop(); position_ = checked ? 1 : 0; update();
-    }
-protected:
-    void paintEvent(QPaintEvent *) override {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setPen(Qt::NoPen);
-        p.setBrush(theme::Blend(theme::RaisedColor(this), QColor(theme::Text), position_));
-        const QRectF track((width() - 35.2) / 2, (height() - 19.8) / 2, 35.2, 19.8);
-        p.drawRoundedRect(track, 9.9, 9.9);
-        p.setBrush(theme::Blend(QColor("#ffffff"), theme::CanvasColor(this), position_));
-        p.drawEllipse(QRectF(track.left() + 2.2 + position_ * 15.4, track.top() + 2.2, 15.4, 15.4));
-        if (keyboardFocus_ && hasFocus()) {
-            p.setPen(QPen(theme::AccentColor(this), 1));
-            p.setBrush(Qt::NoBrush);
-            p.drawRoundedRect(QRectF(.5, .5, 37, 23), 11, 11);
-        }
-    }
-    void showEvent(QShowEvent* event) override {
-        QAbstractButton::showEvent(event); animation_.stop(); position_ = isChecked() ? 1 : 0;
-    }
-    void mousePressEvent(QMouseEvent* event) override { keyboardFocus_ = false; QAbstractButton::mousePressEvent(event); }
-    void focusInEvent(QFocusEvent* event) override {
-        keyboardFocus_ = event->reason() == Qt::TabFocusReason || event->reason() == Qt::BacktabFocusReason;
-        QAbstractButton::focusInEvent(event); update();
-    }
-private:
-    QVariantAnimation animation_{this};
-    qreal position_ = 0;
-    bool keyboardFocus_ = false;
-};
-
 class MagpieShell final : public QWidget {
 public:
     QStackedWidget *pages;

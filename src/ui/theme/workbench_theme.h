@@ -11,6 +11,7 @@ inline constexpr const char *Surface = "#232327";
 inline constexpr const char *Field = "#232327";
 inline constexpr const char *Raised = "#2d2d33";
 inline constexpr const char *Border = "#333339";
+inline constexpr const char *Divider = "#2c2c32";
 inline constexpr const char *Text = "#ededf1";
 inline constexpr const char *Muted = "#8b8b94";
 inline constexpr const char *Selection = "#27272c";
@@ -59,7 +60,7 @@ inline QString WorkbenchStyleSheet(const QColor &accent = DefaultAccent())
         }
         QGroupBox#configurationSchemes, QGroupBox#outputPanel { margin-top: 0; padding-top: 0; }
         QFrame[settingsCard="true"] { background: $surface; border: 1px solid $border; border-radius: 13px; }
-        QFrame[settingsRow="true"] { background: transparent; border: 0; border-bottom: 1px solid #2c2c32; }
+        QFrame[settingsRow="true"] { background: transparent; border: 0; border-bottom: 1px solid $divider; }
         QFrame[settingsLastRow="true"] { border-bottom: 0; }
         QTabWidget::pane { border: 0; background: $surface; top: 8px; border-radius: 8px; }
         QTabWidget#resultTabs::pane, QTabWidget#analysisViews::pane { background: $canvas; }
@@ -99,6 +100,11 @@ inline QString WorkbenchStyleSheet(const QColor &accent = DefaultAccent())
         QPushButton[moduleAction="true"]:focus, QToolButton[moduleAction="true"]:focus { border-color: $accent; }
         QLabel[gainStatus="true"] { background: $raised; color: $muted; border: 0; border-radius: 4px; padding: 0 6px; }
         QPushButton:disabled, QToolButton:disabled { color: #56565f; border-color: #2c2c32; }
+        QPushButton[primary="true"]:disabled { background: $raised; color: $muted; border: 0; }
+        QPushButton[dropTarget="true"] { background: transparent; border: 0; border-radius: 12px; color: $muted; }
+        QPushButton[dropTarget="true"]:hover { background: $raised; color: $text; }
+        QPushButton[dropTarget="true"]:focus { border: 1px solid $accent; }
+        QFrame[statModule="true"][dropActive="true"] { border-color: $accent; background: $raised; }
         QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {
             min-height: 24px; padding: 2px 9px; background: $field; color: $text;
             border: 1px solid $border; border-radius: 7px; font-weight: 400;
@@ -123,9 +129,9 @@ inline QString WorkbenchStyleSheet(const QColor &accent = DefaultAccent())
         QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
         QTableWidget, QTableView, QListWidget {
             background: $surface; alternate-background-color: $surface; color: $text;
-            border: 0; gridline-color: #2c2c32; selection-background-color: $raised; selection-color: $text;
+            border: 0; gridline-color: $divider; selection-background-color: $raised; selection-color: $text;
         }
-        QTableView::item { padding: 5px 8px; border: 0; border-bottom: 1px solid #2c2c32; }
+        QTableView::item { padding: 5px 8px; border: 0; border-bottom: 1px solid $divider; }
         QHeaderView::section { background: $surface; color: $muted; border: 0; border-bottom: 1px solid $border; padding: 8px; font-weight: 400; }
         QTextBrowser, QPlainTextEdit { background: $surface; color: $text; border: 0; border-radius: 8px; font-weight: 400; }
         QSplitter::handle { background: transparent; }
@@ -139,7 +145,7 @@ inline QString WorkbenchStyleSheet(const QColor &accent = DefaultAccent())
     )");
     const std::pair<const char *, const char *> tokens[] = {
         {"$canvas", Canvas}, {"$surface", Surface}, {"$field", Field}, {"$raised", Raised},
-        {"$border", Border}, {"$text", Text}, {"$muted", Muted}, {"$selection", Selection}
+        {"$border", Border}, {"$divider", Divider}, {"$text", Text}, {"$muted", Muted}, {"$selection", Selection}
     };
     const auto colors = MakeAccentColors(accent);
     sheet.replace("$accentHover", colors.hover.name()).replace("$accentPressed", colors.pressed.name())

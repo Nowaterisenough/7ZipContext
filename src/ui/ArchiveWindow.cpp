@@ -32,6 +32,7 @@
 #include <QStandardPaths>
 #include <QStyledItemDelegate>
 #include <QStyleFactory>
+#include <QStyleOptionComboBox>
 #include <QSystemTrayIcon>
 #include <QWindow>
 #include <dwmapi.h>
@@ -83,6 +84,18 @@ QLineEdit* Edit(const char* name, const QString& placeholder, bool secret = fals
     if (secret) { edit->setEchoMode(QLineEdit::Password); edit->setMaxLength(1024); }
     return edit;
 }
+class ComboBox final : public QComboBox {
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        QComboBox::paintEvent(event);
+        QStyleOptionComboBox option; initStyleOption(&option);
+        const auto arrow = style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxArrow, this);
+        const QPointF center = QRectF(arrow).center();
+        QPainter painter(this); painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(isEnabled() ? theme::MutedColor(this) : QColor("#56565f"), 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPolyline(QPolygonF{center + QPointF(-2.5, -1), center + QPointF(0, 1.5), center + QPointF(2.5, -1)});
+    }
+};
 desktop::SegmentedTabBar* Segments(const char* name, const QStringList& items) {
     auto* segments = new desktop::SegmentedTabBar;
     segments->setObjectName(QString::fromLatin1(name));
@@ -99,7 +112,7 @@ QFrame* Card() {
     layout->setSpacing(0);
     return card;
 }
-void Row(QFrame* card, const QString& title, const QString& description, QWidget* control, bool last = false) {
+QFrame* Row(QFrame* card, const QString& title, const QString& description, QWidget* control, bool last = false) {
     auto* row = new QFrame;
     row->setProperty("settingsRow", true);
     row->setProperty("searchText", title + ' ' + description);
@@ -113,6 +126,11 @@ void Row(QFrame* card, const QString& title, const QString& description, QWidget
     auto* name = Label(title, false, true);
     name->setFont(desktop::type::RowTitle());
     name->setMinimumHeight(20);
+    auto* field = qobject_cast<QLineEdit*>(control);
+    if (!field) field = control->findChild<QLineEdit*>();
+    name->setBuddy(field ? field : control);
+    if (field) field->setAccessibleName(title);
+    control->setAccessibleName(title);
     labels->addWidget(name);
     if (!description.isEmpty()) {
         auto* note = Label(description);
@@ -124,6 +142,7 @@ void Row(QFrame* card, const QString& title, const QString& description, QWidget
     layout->addLayout(labels, 1);
     layout->addWidget(control, control->sizePolicy().horizontalPolicy() == QSizePolicy::Expanding ? 2 : 0);
     static_cast<QVBoxLayout*>(card->layout())->addWidget(row);
+    return row;
 }
 QWidget* WithBrowse(QLineEdit* edit, QPushButton* browse) {
     auto* widget = new QWidget;
@@ -133,14 +152,13 @@ QWidget* WithBrowse(QLineEdit* edit, QPushButton* browse) {
     row->setSpacing(8); row->addWidget(edit, 1); row->addWidget(browse);
     return widget;
 }
-QWidget* Empty(const QString& title, const QString& detail) {
+QWidget* Empty(const QString& title) {
     auto* widget = new QWidget;
     auto* layout = new QVBoxLayout(widget);
     layout->setContentsMargins(18, 20, 18, 20);
     layout->setSpacing(7); layout->addStretch();
     auto* headline = Label(title, false, true); headline->setAlignment(Qt::AlignCenter);
-    auto* note = Label(detail, true); note->setWordWrap(true); note->setAlignment(Qt::AlignCenter);
-    layout->addWidget(headline); layout->addWidget(note); layout->addStretch();
+    layout->addWidget(headline); layout->addStretch();
     return widget;
 }
 QWidget* Page(QVBoxLayout*& layout, const char* name) {
@@ -173,8 +191,11 @@ public:
         const QRect detail = dense_ ? QRect(title.left(), option.rect.top() + 23, title.width(), 17) : title.translated(0, 24);
         painter->drawText(detail, Qt::AlignLeft | Qt::AlignVCenter,
             painter->fontMetrics().elidedText(index.data(Detail).toString(), Qt::ElideRight, title.width()));
-        painter->setPen(QColor("#2c2c32")); painter->drawLine(option.rect.bottomLeft() + QPoint(15, 0), option.rect.bottomRight() - QPoint(15, 0));
-        if (option.state & QStyle::State_HasFocus) {
+        if (index.row() + 1 < index.model()->rowCount()) {
+            painter->setPen(theme::DividerColor(option.widget));
+            painter->drawLine(option.rect.bottomLeft() + QPoint(15, 0), option.rect.bottomRight() - QPoint(15, 0));
+        }
+        if ((option.state & QStyle::State_HasFocus) && (option.state & QStyle::State_KeyboardFocusChange)) {
             painter->setPen(QPen(theme::AccentColor(option.widget), 1)); painter->setBrush(Qt::NoBrush);
             painter->drawRoundedRect(QRectF(option.rect).adjusted(1, 1, -1, -1), 5, 5);
         }
@@ -229,7 +250,6 @@ protected:
         }
         p.setPen(QColor(theme::Muted));
         p.drawText(QRectF(area.left(), area.bottom() + 4, area.width(), 18), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("处理速度 · MB/s"));
-        if (controller_.speedHistory().isEmpty()) p.drawText(area, Qt::AlignCenter, QStringLiteral("任务开始后显示实时速度"));
     }
 private:
     ArchiveController& controller_;
@@ -263,7 +283,8 @@ ArchiveWindow::ArchiveWindow(ArchiveController& controller, bool compact) : cont
     if (compact) {
         auto sheet = theme::WorkbenchStyleSheet(MagpieAccent()) + ShellStyle() + desktop::type::StyleSheet();
         sheet.replace(theme::Canvas, "#1c1d21").replace(theme::Surface, "#25262c")
-             .replace(theme::Raised, "#2e2f36").replace(theme::Border, "#323338").replace(theme::Muted, "#9c9ca6");
+             .replace(theme::Raised, "#2e2f36").replace(theme::Border, "#323338")
+             .replace(theme::Divider, "#323338").replace(theme::Muted, "#9c9ca6");
         setStyleSheet(sheet);
     }
     setWindowTitle(compact ? QStringLiteral("7-Zip Context · 托盘") : QStringLiteral("7-Zip Context"));
@@ -324,7 +345,7 @@ ArchiveWindow::ArchiveWindow(ArchiveController& controller, bool compact) : cont
     connect(&controller_, &ArchiveController::progressChanged, this, &ArchiveWindow::syncProgress);
     connect(&controller_, &ArchiveController::passwordsChanged, this, &ArchiveWindow::refreshPasswords);
     connect(&controller_.updates(), &UpdateManager::changed, this, &ArchiveWindow::syncUpdates);
-    connect(&controller_, &ArchiveController::statusChanged, status_, &QLabel::setText);
+    connect(&controller_, &ArchiveController::statusChanged, this, &ArchiveWindow::syncStatus);
     auto* open = new QShortcut(QKeySequence::Open, this);
     connect(open, &QShortcut::activated, this, [this] { if (page_ == "extract" || page_ == "compress") pickFiles(); });
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
@@ -342,10 +363,16 @@ ArchiveWindow::ArchiveWindow(ArchiveController& controller, bool compact) : cont
 
 QWidget* ArchiveWindow::makeQueue(bool sources) {
     auto* card = new QFrame; card->setProperty("statModule", true);
+    card->setObjectName(sources ? QStringLiteral("sourceDropZone") : QStringLiteral("archiveDropZone"));
     auto* layout = new QVBoxLayout(card); layout->setContentsMargins(1, 1, 1, 1);
     auto* pages = new QStackedWidget;
-    pages->addWidget(Empty(QStringLiteral("将文件或文件夹拖到这里"), sources
-        ? QStringLiteral("7z / ZIP · 密码加密 · 自定义分卷") : QStringLiteral("自动识别压缩包、分卷、视频和图片")));
+    auto* empty = Button(QStringLiteral("添加文件或拖入此处"), sources ? "chooseSources" : "chooseArchives");
+    empty->setProperty("dropTarget", true);
+    empty->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    empty->setIcon(desktop::LineIcon(desktop::ShellIcon::File));
+    pages->addWidget(empty);
+    editable_.append(empty);
+    connect(empty, &QPushButton::clicked, this, [this] { pickFiles(); });
     auto* list = new RoundedArchiveList;
     list->setFrameShape(QFrame::NoFrame);
     list->setObjectName(sources ? QStringLiteral("sourceList") : QStringLiteral("archiveList"));
@@ -362,42 +389,40 @@ QWidget* ArchiveWindow::makeQueue(bool sources) {
 QWidget* ArchiveWindow::makeExtractPage() {
     QVBoxLayout* layout; auto* page = Page(layout, "extractPage");
     auto* toolbar = new QHBoxLayout; toolbar->setSpacing(8);
-    auto* add = Button(QStringLiteral("＋ 添加文件"), "addArchive");
-    auto* folder = Button(QStringLiteral("添加文件夹"), "addExtractionFolder");
-    auto* correct = correctName_ = Button(QStringLiteral("修正名称"), "correctName");
+    auto* add = Button(QStringLiteral("添加文件…"), "addArchive");
+    auto* folder = Button(QStringLiteral("添加文件夹…"), "addExtractionFolder");
+    auto* correct = Button(QStringLiteral("修正名称"), "correctName");
     auto* remove = Button(QStringLiteral("移除"), "removeArchive");
     auto* clear = Button(QStringLiteral("清空"), "clearArchives");
-    toolbar->addWidget(add); toolbar->addWidget(folder); toolbar->addWidget(correct); toolbar->addStretch(); toolbar->addWidget(remove); toolbar->addWidget(clear);
+    toolbar->addWidget(add); toolbar->addWidget(folder); toolbar->addStretch(); toolbar->addWidget(remove); toolbar->addWidget(clear);
     layout->addLayout(toolbar);
     archiveCount_ = Label({}, true); layout->addWidget(archiveCount_); layout->addWidget(makeQueue(false));
     auto* card = Card();
-    extractDestination_ = Edit("extractDestination", QStringLiteral("留空：下载文件夹/整理结果"));
+    extractDestination_ = Edit("extractDestination", QDir::toNativeSeparators(QDir(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).filePath(QStringLiteral("整理结果"))));
     auto* browse = Button(QStringLiteral("选择…"), "browseExtraction");
     Row(card, QStringLiteral("保存位置"), {}, WithBrowse(extractDestination_, browse));
     extractMode_ = Segments("extractMode", {QStringLiteral("独立目录"), QStringLiteral("直接解压")});
-    Row(card, QStringLiteral("解压方式"), QStringLiteral("已有文件不会覆盖"), extractMode_);
-    extractPassword_ = Edit("extractPassword", QStringLiteral("手动密码，可留空"), true);
+    Row(card, QStringLiteral("解压方式"), {}, extractMode_);
+    extractMode_->setToolTip(QStringLiteral("已有文件不会覆盖"));
+    extractPassword_ = Edit("extractPassword", QStringLiteral("输入密码（可选）"), true);
     auto* passwords = Button(QStringLiteral("密码单…"), "openPasswordLists");
-    Row(card, QStringLiteral("解压密码"), QStringLiteral("优先尝试手动密码，再匹配启用的密码单"), WithBrowse(extractPassword_, passwords));
-    autoNested_ = new desktop::ToggleSwitch; autoNested_->setObjectName(QStringLiteral("autoNested"));
+    Row(card, QStringLiteral("解压密码"), {}, WithBrowse(extractPassword_, passwords));
+    autoNested_ = Segments("autoNested", {QStringLiteral("关闭"), QStringLiteral("开启")});
     autoNested_->setAccessibleName(QStringLiteral("自动解压内层"));
-    Row(card, QStringLiteral("自动解压内层"), QStringLiteral("使用密码单逐层解压，成功后清理中间包"), autoNested_);
-    autoNested_->setToolTip(QStringLiteral("整条嵌套分支成功后删除中间压缩包及分卷；最初添加的压缩包保留。失败或取消时保留未完成分支。"));
-    organizeMedia_ = new desktop::ToggleSwitch; organizeMedia_->setObjectName(QStringLiteral("organizeMedia"));
+    Row(card, QStringLiteral("自动解压内层"), {}, autoNested_);
+    organizeMedia_ = Segments("organizeMedia", {QStringLiteral("关闭"), QStringLiteral("开启")});
     organizeMedia_->setAccessibleName(QStringLiteral("仅保留视频和图片"));
     organizeMedia_->setToolTip(QStringLiteral("每组压缩包解压成功后，整理到独立子文件夹的“视频”和“图片”目录，再删除其他解压文件。无媒体、失败或取消时保留内容；原始压缩包和已有文件保留。"));
-    Row(card, QStringLiteral("仅保留视频和图片"), QStringLiteral("分类整理到独立目录，完成后删除其他解压文件"), organizeMedia_, true);
+    Row(card, QStringLiteral("仅保留视频和图片"), QStringLiteral("整理至“视频 / 图片”，删除其他解压文件"), organizeMedia_, true);
     layout->addWidget(card);
     auto* actions = new QHBoxLayout;
     auto* test = Button(QStringLiteral("检测完整性"), "testArchives");
     auto* start = Button(QStringLiteral("开始解压"), "startExtraction", true);
-    actions->addWidget(test); actions->addStretch(); actions->addWidget(start); layout->addLayout(actions); layout->addStretch();
+    actions->addWidget(test); actions->addWidget(correct); actions->addStretch(); actions->addWidget(start); layout->addLayout(actions); layout->addStretch();
     editable_ << add << folder << correct << remove << clear << card << test << start;
     connect(add, &QPushButton::clicked, this, [this] { pickFiles(); });
     connect(folder, &QPushButton::clicked, this, [this] { pickFiles(true); });
-    connect(archives_, &QListWidget::currentRowChanged, this, [this](int row) {
-        correctName_->setEnabled(!controller_.busy() && row >= 0 && static_cast<size_t>(row) < controller_.archives.size());
-    });
+    connect(archives_, &QListWidget::currentRowChanged, this, &ArchiveWindow::syncQueueActions);
     connect(correct, &QPushButton::clicked, this, [this] { controller_.start(ArchiveController::Operation::Correct, archives_->currentRow()); });
     connect(remove, &QPushButton::clicked, this, [this] { controller_.remove(archives_->currentRow(), false); });
     connect(clear, &QPushButton::clicked, this, [this] { controller_.clear(false); });
@@ -408,11 +433,13 @@ QWidget* ArchiveWindow::makeExtractPage() {
     connect(extractDestination_, &QLineEdit::textEdited, this, [this](const QString& text) { controller_.extractDestination = text; controller_.notifyOptions(); });
     connect(extractPassword_, &QLineEdit::textEdited, this, [this](const QString& text) { controller_.extractPassword = text; controller_.notifyOptions(); });
     connect(extractMode_, &QTabBar::currentChanged, this, [this](int index) { if (synchronizing_) return; controller_.subfolder = index == 0; controller_.notifyOptions(); });
-    connect(autoNested_, &QAbstractButton::toggled, this, [this](bool enabled) {
-        controller_.autoNested = enabled; controller_.savePreferences(); controller_.notifyOptions();
+    connect(autoNested_, &QTabBar::currentChanged, this, [this](int index) {
+        if (synchronizing_) return;
+        controller_.autoNested = index == 1; controller_.savePreferences(); controller_.notifyOptions();
     });
-    connect(organizeMedia_, &QAbstractButton::toggled, this, [this](bool enabled) {
-        controller_.organizeMedia = enabled; controller_.savePreferences(); controller_.notifyOptions();
+    connect(organizeMedia_, &QTabBar::currentChanged, this, [this](int index) {
+        if (synchronizing_) return;
+        controller_.organizeMedia = index == 1; controller_.savePreferences(); controller_.notifyOptions();
     });
     return page;
 }
@@ -420,8 +447,8 @@ QWidget* ArchiveWindow::makeExtractPage() {
 QWidget* ArchiveWindow::makeCompressPage() {
     QVBoxLayout* layout; auto* page = Page(layout, "compressPage");
     auto* toolbar = new QHBoxLayout; toolbar->setSpacing(8);
-    auto* add = Button(QStringLiteral("＋ 添加文件"), "addSource");
-    auto* folder = Button(QStringLiteral("添加文件夹"), "addFolder");
+    auto* add = Button(QStringLiteral("添加文件…"), "addSource");
+    auto* folder = Button(QStringLiteral("添加文件夹…"), "addFolder");
     auto* remove = Button(QStringLiteral("移除"), "removeSource");
     auto* clear = Button(QStringLiteral("清空"), "clearSources");
     toolbar->addWidget(add); toolbar->addWidget(folder); toolbar->addStretch(); toolbar->addWidget(remove); toolbar->addWidget(clear); layout->addLayout(toolbar);
@@ -429,26 +456,27 @@ QWidget* ArchiveWindow::makeCompressPage() {
     auto* card = Card();
     archiveName_ = Edit("archiveName", QStringLiteral("压缩包名称"));
     Row(card, QStringLiteral("压缩包名称"), {}, archiveName_);
-    compressDestination_ = Edit("compressDestination", QStringLiteral("留空：源文件所在目录"));
+    compressDestination_ = Edit("compressDestination", QStringLiteral("源文件所在目录"));
     auto* browse = Button(QStringLiteral("选择…"), "browseCompression");
     Row(card, QStringLiteral("保存位置"), {}, WithBrowse(compressDestination_, browse));
     format_ = Segments("archiveFormat", {QStringLiteral("7z"), QStringLiteral("ZIP")});
     Row(card, QStringLiteral("压缩格式"), {}, format_);
     level_ = Segments("compressionLevel", {QStringLiteral("快速"), QStringLiteral("标准"), QStringLiteral("极限")});
     Row(card, QStringLiteral("压缩级别"), {}, level_);
-    volume_ = new QComboBox; volume_->setObjectName(QStringLiteral("volumeSize")); volume_->setAccessibleName(QStringLiteral("分卷大小"));
+    volume_ = new ComboBox; volume_->setObjectName(QStringLiteral("volumeSize")); volume_->setAccessibleName(QStringLiteral("分卷大小"));
     volume_->setEditable(true); volume_->addItems({QStringLiteral("不分卷"), "100M", "1G", "4G"}); volume_->setMinimumWidth(150);
-    Row(card, QStringLiteral("分卷大小"), QStringLiteral("支持 K / M / G，纯数字按 MB"), volume_);
-    compressPassword_ = Edit("compressPassword", QStringLiteral("留空不加密"), true);
+    Row(card, QStringLiteral("分卷大小"), {}, volume_);
+    volume_->setToolTip(QStringLiteral("例如 100M、1G；纯数字按 MB"));
+    compressPassword_ = Edit("compressPassword", QStringLiteral("不加密"), true);
     Row(card, QStringLiteral("加密密码"), {}, compressPassword_, true); layout->addWidget(card);
     auto* actions = new QHBoxLayout;
-    auto* note = Label(QStringLiteral("分卷文件将按 .001、.002 顺序保存"), true); note->setWordWrap(true);
     auto* start = Button(QStringLiteral("开始压缩"), "startCompression", true);
-    actions->addWidget(note, 1); actions->addWidget(start); layout->addLayout(actions); layout->addStretch();
+    actions->addStretch(); actions->addWidget(start); layout->addLayout(actions); layout->addStretch();
     editable_ << add << folder << remove << clear << card << start;
     connect(add, &QPushButton::clicked, this, [this] { pickFiles(); });
     connect(folder, &QPushButton::clicked, this, [this] { pickFiles(true); });
     connect(remove, &QPushButton::clicked, this, [this] { controller_.remove(sources_->currentRow(), true); });
+    connect(sources_, &QListWidget::currentRowChanged, this, &ArchiveWindow::syncQueueActions);
     connect(clear, &QPushButton::clicked, this, [this] { controller_.clear(true); });
     connect(browse, &QPushButton::clicked, this, [this] { pickDestination(true); });
     connect(start, &QPushButton::clicked, this, [this] { run(ArchiveController::Operation::Compress); });
@@ -469,12 +497,13 @@ QWidget* ArchiveWindow::makeTasksPage() {
     auto* card = new QFrame; card->setProperty("statModule", true);
     auto* rows = new QVBoxLayout(card); rows->setContentsMargins(1, 1, 1, 1);
     taskQueue_ = new QStackedWidget;
-    taskQueue_->addWidget(Empty(QStringLiteral("还没有任务记录"), QStringLiteral("检测、压缩和解压的结果会显示在这里")));
+    taskQueue_->addWidget(Empty(QStringLiteral("暂无任务")));
     tasks_ = new RoundedArchiveList; tasks_->setObjectName(QStringLiteral("taskList")); tasks_->setItemDelegate(new ArchiveDelegate(tasks_));
     tasks_->setFrameShape(QFrame::NoFrame);
     tasks_->setUniformItemSizes(true); tasks_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     taskQueue_->addWidget(tasks_); rows->addWidget(taskQueue_); layout->addWidget(card);
     connect(tasks_, &QListWidget::itemDoubleClicked, this, [this] { openOutput(); });
+    connect(tasks_, &QListWidget::currentRowChanged, this, &ArchiveWindow::syncOutputAction);
     auto* metrics = Card(); auto* grid = new QHBoxLayout; grid->setContentsMargins(14, 12, 14, 12); grid->setSpacing(16);
     auto metric = [&](const QString& title, QLabel*& value) {
         auto* column = new QVBoxLayout; column->setSpacing(5); column->addWidget(Label(title, true));
@@ -496,8 +525,8 @@ QWidget* ArchiveWindow::makeTasksPage() {
 QWidget* ArchiveWindow::makePasswordsPage() {
     QVBoxLayout* layout; auto* page = Page(layout, "passwordsPage");
     auto* toolbar = new QHBoxLayout;
-    auto* import = Button(QStringLiteral("＋ 导入文件"), "importPasswords");
-    auto* add = Button(QStringLiteral("手动添加"), "addPasswords");
+    auto* import = Button(QStringLiteral("导入文件…"), "importPasswords");
+    auto* add = Button(QStringLiteral("添加密码单…"), "addPasswords");
     toolbar->addWidget(import); toolbar->addWidget(add); toolbar->addStretch(); layout->addLayout(toolbar);
     passwordSummary_ = Label({}, true); passwordSummary_->setObjectName(QStringLiteral("passwordSummary"));
     layout->addWidget(passwordSummary_);
@@ -507,15 +536,17 @@ QWidget* ArchiveWindow::makePasswordsPage() {
     auto* listCard = new QFrame; listCard->setProperty("statModule", true);
     auto* listLayout = new QVBoxLayout(listCard); listLayout->setContentsMargins(1, 1, 1, 1);
     passwordQueue_ = new QStackedWidget; passwordQueue_->setMinimumHeight(compact_ ? 132 : 164);
-    passwordQueue_->addWidget(Empty(QStringLiteral("还没有密码单"), QStringLiteral("导入文本文件或手动添加，每行一个密码")));
+    passwordQueue_->addWidget(Empty(QStringLiteral("暂无密码单")));
     passwordLists_ = new RoundedArchiveList; passwordLists_->setObjectName(QStringLiteral("passwordLists"));
     passwordLists_->setFrameShape(QFrame::NoFrame); passwordLists_->setItemDelegate(new ArchiveDelegate(passwordLists_, true));
     passwordLists_->setUniformItemSizes(true); passwordLists_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     passwordQueue_->addWidget(passwordLists_); listLayout->addWidget(passwordQueue_); layout->addWidget(listCard);
+    auto* noMatches = Empty(QStringLiteral("没有匹配的密码"));
+    noMatches->setObjectName(QStringLiteral("passwordsNoResults")); passwordQueue_->addWidget(noMatches);
     passwordSourceRow_ = new QWidget;
     auto* sourceLayout = new QHBoxLayout(passwordSourceRow_); sourceLayout->setContentsMargins(0, 0, 0, 0); sourceLayout->setSpacing(10);
     sourceLayout->addWidget(Label(QStringLiteral("来源密码单"), true));
-    passwordSource_ = new QComboBox; passwordSource_->setObjectName("passwordListSource"); passwordSource_->setAccessibleName(QStringLiteral("选择要管理的来源密码单"));
+    passwordSource_ = new ComboBox; passwordSource_->setObjectName("passwordListSource"); passwordSource_->setAccessibleName(QStringLiteral("选择要管理的来源密码单"));
     sourceLayout->addWidget(passwordSource_, 1); layout->addWidget(passwordSourceRow_); passwordSourceRow_->hide();
     auto* actions = new QHBoxLayout;
     editPasswordList_ = Button(QStringLiteral("编辑密码单…"), "editPasswords");
@@ -525,12 +556,13 @@ QWidget* ArchiveWindow::makePasswordsPage() {
     layout->addLayout(actions);
 
     auto* options = Card();
-    autoPasswords_ = new desktop::ToggleSwitch; autoPasswords_->setObjectName(QStringLiteral("autoPasswords"));
+    autoPasswords_ = Segments("autoPasswords", {QStringLiteral("关闭"), QStringLiteral("开启")});
     autoPasswords_->setAccessibleName(QStringLiteral("自动使用密码单"));
-    Row(options, QStringLiteral("自动使用密码单"), QStringLiteral("解压和检测时尝试已启用的密码单，手动密码优先"), autoPasswords_, true);
+    Row(options, QStringLiteral("自动使用密码单"), {}, autoPasswords_, true);
+    autoPasswords_->setToolTip(QStringLiteral("解压和检测时匹配已启用的密码单，手动密码优先"));
     layout->addWidget(options);
-    auto* note = Label(QStringLiteral("支持 UTF-8、UTF-16 和 GB18030 文本。自动去重，保留密码中的空格。\n密码单由当前 Windows 账户加密保存，原始导入文件不会被修改。"), true);
-    note->setWordWrap(true); layout->addWidget(note); layout->addStretch();
+    import->setToolTip(QStringLiteral("每行一个密码，支持 UTF-8、UTF-16 和 GB18030"));
+    layout->addStretch();
     editable_ << import << add << options;
     connect(import, &QPushButton::clicked, this, &ArchiveWindow::importPasswords);
     connect(add, &QPushButton::clicked, this, [this] { editPasswords(false); });
@@ -545,8 +577,9 @@ QWidget* ArchiveWindow::makePasswordsPage() {
         }
     });
     connect(removePasswordList_, &QPushButton::clicked, this, [this] { controller_.removePasswordList(selectedPasswordList()); });
-    connect(autoPasswords_, &QAbstractButton::toggled, this, [this](bool enabled) {
-        controller_.autoPasswords = enabled; controller_.savePreferences(); controller_.notifyOptions();
+    connect(autoPasswords_, &QTabBar::currentChanged, this, [this](int index) {
+        if (synchronizing_) return;
+        controller_.autoPasswords = index == 1; controller_.savePreferences(); controller_.notifyOptions();
     });
     return page;
 }
@@ -618,6 +651,7 @@ void ArchiveWindow::refreshPasswords() {
     passwordQueue_->setFixedHeight(height);
     passwordQueue_->parentWidget()->setFixedHeight(height + 2);
     passwordSummary_->setText(QStringLiteral("共 %1 个密码 · %2 份密码单 · 已启用 %3 个").arg(library.uniquePasswords().size()).arg(library.lists().size()).arg(library.enabledPasswords().size()));
+    passwordSummary_->setVisible(!library.lists().isEmpty());
     passwordError_->setText(controller_.passwordLibraryError()); passwordError_->setVisible(!controller_.passwordLibraryError().isEmpty());
     syncPasswordActions(); if (page_ == "passwords") filterSettings();
 }
@@ -652,10 +686,8 @@ void ArchiveWindow::editPasswords(bool existing) {
     auto* layout = new QVBoxLayout(&dialog); layout->setContentsMargins(20, 18, 20, 18); layout->setSpacing(12);
     layout->addWidget(Label(QStringLiteral("名称"), false, true));
     auto* title = Edit("passwordListName", QStringLiteral("例如：常用密码")); title->setMaxLength(120); title->setText(name); layout->addWidget(title);
-    auto* hint = Label(QStringLiteral("密码直接显示；可填写用途、来源等注释。保留密码中的空格，空行会忽略。"), true);
-    hint->setWordWrap(true); layout->addWidget(hint);
     auto* entries = new QTableWidget(std::max(1, static_cast<int>(values.size())), 2); entries->setObjectName(QStringLiteral("passwordListEntries"));
-    entries->setAccessibleName(QStringLiteral("密码和注释")); entries->setHorizontalHeaderLabels({QStringLiteral("密码"), QStringLiteral("注释")});
+    entries->setAccessibleName(QStringLiteral("密码和注释")); entries->setHorizontalHeaderLabels({QStringLiteral("密码"), QStringLiteral("注释（可选）")});
     entries->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch); entries->verticalHeader()->setDefaultSectionSize(34);
     entries->setSelectionBehavior(QAbstractItemView::SelectRows); entries->setShowGrid(false);
     for (int row = 0; row < entries->rowCount(); ++row) {
@@ -707,49 +739,48 @@ QWidget* ArchiveWindow::makeSettingsPage(bool about) {
     QVBoxLayout* layout; auto* page = Page(layout, about ? "aboutPage" : "settingsPage");
     auto* card = Card();
     if (about) {
-        Row(card, QStringLiteral("7-Zip Context"), QStringLiteral("压缩、解压与托盘工作台"), Label('v' + controller_.updates().currentVersion(), true));
-        Row(card, QStringLiteral("压缩引擎"), QStringLiteral("本地处理文件，无需上传"), Label(QStringLiteral("7-Zip"), true));
-        Row(card, QStringLiteral("支持压缩"), QStringLiteral("密码加密和自定义分卷"), Label(QStringLiteral("7z / ZIP"), true));
-        Row(card, QStringLiteral("智能识别"), QStringLiteral("读取文件头识别格式，定位首卷并纠正扩展名"), Label(QStringLiteral("已启用"), true));
-        Row(card, QStringLiteral("完整性检测"), QStringLiteral("报告密码、损坏与缺卷问题；无法重建丢失的数据"), Label(QStringLiteral("CRC 校验"), true), true);
+        Row(card, QStringLiteral("7-Zip Context"), {}, Label('v' + controller_.updates().currentVersion(), true));
+        Row(card, QStringLiteral("压缩引擎"), {}, Label(QStringLiteral("7-Zip"), true));
+        Row(card, QStringLiteral("压缩格式"), {}, Label(QStringLiteral("7z / ZIP"), true), true);
     } else {
-        Row(card, QStringLiteral("外观"), QStringLiteral("炭灰色背景、列表卡片与分段控件"), Label(QStringLiteral("深色"), true));
-        hideOnBlur_ = new desktop::ToggleSwitch; hideOnBlur_->setObjectName(QStringLiteral("hideOnBlur"));
+        Row(card, QStringLiteral("外观"), {}, Label(QStringLiteral("深色"), true));
+        hideOnBlur_ = Segments("hideOnBlur", {QStringLiteral("关闭"), QStringLiteral("开启")});
         hideOnBlur_->setAccessibleName(QStringLiteral("托盘弹窗自动收起"));
-        Row(card, QStringLiteral("托盘弹窗自动收起"), QStringLiteral("默认保持显示；开启后点击外部自动收起"), hideOnBlur_);
-        rememberGeometry_ = new desktop::ToggleSwitch; rememberGeometry_->setObjectName(QStringLiteral("rememberGeometry"));
+        Row(card, QStringLiteral("点击外部收起托盘弹窗"), {}, hideOnBlur_);
+        rememberGeometry_ = Segments("rememberGeometry", {QStringLiteral("关闭"), QStringLiteral("开启")});
         rememberGeometry_->setAccessibleName(QStringLiteral("记住窗口尺寸"));
-        Row(card, QStringLiteral("记住窗口尺寸"), QStringLiteral("下次启动恢复主窗口的大小和位置"), rememberGeometry_);
+        Row(card, QStringLiteral("记住窗口大小和位置"), {}, rememberGeometry_);
         auto* passwords = Button(QStringLiteral("管理…"), "managePasswordLists");
-        Row(card, QStringLiteral("密码单"), QStringLiteral("密码单按 Windows 账户加密保存；手动密码不保存"), passwords, true);
+        Row(card, QStringLiteral("密码单"), {}, passwords, true);
+        passwords->setToolTip(QStringLiteral("密码单按 Windows 账户加密保存；手动密码不保存"));
         connect(passwords, &QPushButton::clicked, this, [this] { navigate(QStringLiteral("passwords")); });
-        connect(hideOnBlur_, &QAbstractButton::toggled, this, [this](bool enabled) { controller_.hideOnBlur = enabled; controller_.savePreferences(); controller_.notifyOptions(); });
-        connect(rememberGeometry_, &QAbstractButton::toggled, this, [this](bool enabled) { controller_.rememberGeometry = enabled; controller_.savePreferences(); controller_.notifyOptions(); });
+        connect(hideOnBlur_, &QTabBar::currentChanged, this, [this](int index) { if (synchronizing_) return; controller_.hideOnBlur = index == 1; controller_.savePreferences(); controller_.notifyOptions(); });
+        connect(rememberGeometry_, &QTabBar::currentChanged, this, [this](int index) { if (synchronizing_) return; controller_.rememberGeometry = index == 1; controller_.savePreferences(); controller_.notifyOptions(); });
     }
     layout->addWidget(card);
     if (about) {
-        auto* updates = Card(); auto* body = static_cast<QVBoxLayout*>(updates->layout());
-        updates->setProperty("searchableCard", true); updates->setProperty("searchText", QStringLiteral("在线更新 检查更新 下载更新 安装并重启 启动时自动检查更新"));
-        body->setContentsMargins(16, 14, 16, 14); body->setSpacing(12);
-        body->addWidget(Label(QStringLiteral("在线更新"), false, true));
-        updateStatus_ = Label({}, true); updateStatus_->setObjectName("updateStatus"); updateStatus_->setWordWrap(true); body->addWidget(updateStatus_);
-        auto* buttons = new QHBoxLayout;
+        auto* updates = Card();
+        auto* actions = new QWidget;
+        auto* buttons = new QHBoxLayout(actions); buttons->setContentsMargins(0, 0, 0, 0); buttons->setSpacing(8);
         checkUpdate_ = Button(QStringLiteral("检查更新"), "checkUpdate"); downloadUpdate_ = Button(QStringLiteral("下载更新"), "downloadUpdate");
         installUpdate_ = Button(QStringLiteral("安装并重启"), "installUpdate", true); cancelUpdate_ = Button(QStringLiteral("取消"), "cancelUpdate");
-        buttons->addWidget(checkUpdate_); buttons->addWidget(downloadUpdate_); buttons->addWidget(installUpdate_); buttons->addWidget(cancelUpdate_); buttons->addStretch(); body->addLayout(buttons);
-        updateNotes_ = Label({}, true); updateNotes_->setObjectName("updateNotes"); updateNotes_->setTextFormat(Qt::PlainText); updateNotes_->setWordWrap(true); body->addWidget(updateNotes_);
-        auto* automatic = new QHBoxLayout; automatic->addWidget(Label(QStringLiteral("启动时自动检查更新"))); automatic->addStretch();
-        autoUpdate_ = new desktop::ToggleSwitch; autoUpdate_->setObjectName("autoCheckUpdates"); autoUpdate_->setAccessibleName(QStringLiteral("启动时自动检查更新")); automatic->addWidget(autoUpdate_); body->addLayout(automatic);
+        buttons->addWidget(checkUpdate_); buttons->addWidget(downloadUpdate_); buttons->addWidget(installUpdate_); buttons->addWidget(cancelUpdate_);
+        auto* updateRow = Row(updates, QStringLiteral("在线更新"), controller_.updates().status(), actions);
+        updateRow->setProperty("searchText", QStringLiteral("在线更新 检查更新 下载更新 安装并重启"));
+        for (auto* label : updateRow->findChildren<QLabel*>()) if (label->property("settingDescription").toBool()) updateStatus_ = label;
+        updateStatus_->setObjectName("updateStatus");
+        autoUpdate_ = Segments("autoCheckUpdates", {QStringLiteral("关闭"), QStringLiteral("开启")});
+        Row(updates, QStringLiteral("启动时自动检查更新"), {}, autoUpdate_, true);
         layout->addWidget(updates);
+        updateNotes_ = Label({}, true); updateNotes_->setObjectName("updateNotes"); updateNotes_->setWordWrap(true); layout->addWidget(updateNotes_);
         connect(checkUpdate_, &QPushButton::clicked, &controller_.updates(), &UpdateManager::check);
         connect(downloadUpdate_, &QPushButton::clicked, &controller_.updates(), &UpdateManager::download);
         connect(cancelUpdate_, &QPushButton::clicked, &controller_.updates(), &UpdateManager::cancel);
         connect(installUpdate_, &QPushButton::clicked, &controller_, &ArchiveController::installUpdate);
-        connect(autoUpdate_, &QAbstractButton::toggled, &controller_.updates(), &UpdateManager::setAutoCheck);
+        connect(autoUpdate_, &QTabBar::currentChanged, this, [this](int index) { if (!synchronizing_) controller_.updates().setAutoCheck(index == 1); });
     }
     if (!about) {
-        auto* actions = new QHBoxLayout; auto* note = Label(QStringLiteral("关闭主窗口后保留托盘"), true); note->setWordWrap(true);
-        actions->addWidget(note, 1); auto* quit = Button(QStringLiteral("退出应用"), "quitApplication"); actions->addWidget(quit); layout->addLayout(actions);
+        auto* actions = new QHBoxLayout; actions->addStretch(); auto* quit = Button(QStringLiteral("退出应用"), "quitApplication"); actions->addWidget(quit); layout->addLayout(actions);
         connect(quit, &QPushButton::clicked, &controller_, &ArchiveController::requestQuit);
     }
     auto* empty = Label(QStringLiteral("没有匹配的设置"), true);
@@ -764,7 +795,8 @@ void ArchiveWindow::navigate(const QString& requested) {
     if ((page_ == "passwords") != (page == "passwords")) shell_->search->clear();
     page_ = page; shell_->Select(page); shell_->pages->setCurrentIndex(index);
     shell_->search->setPlaceholderText(page == "passwords" ? QStringLiteral("查找密码和注释") : QStringLiteral("查找设置"));
-    status_->setVisible(controller_.busy() || (page != "general" && page != "about"));
+    shell_->search->setAccessibleName(shell_->search->placeholderText());
+    syncStatus();
     filterSettings();
 }
 QWidget* ArchiveWindow::pageWidget(int index) const { return shell_->pages->widget(index); }
@@ -808,23 +840,29 @@ void ArchiveWindow::refreshQueues() {
         QFileInfo file(path);
         AddItem(sources_, file.fileName(), QDir::toNativeSeparators(file.absolutePath()), file.isDir() ? QStringLiteral("目录") : QStringLiteral("文件"), theme::MutedColor(this), path);
     }
-    archives_->setCurrentRow(std::min(archiveRow, archives_->count() - 1)); sources_->setCurrentRow(std::min(sourceRow, sources_->count() - 1));
+    archives_->setCurrentRow(std::min(std::max(0, archiveRow), archives_->count() - 1));
+    sources_->setCurrentRow(std::min(std::max(0, sourceRow), sources_->count() - 1));
     archiveQueue_->setCurrentIndex(archives_->count() ? 1 : 0); sourceQueue_->setCurrentIndex(sources_->count() ? 1 : 0);
     auto queueHeight = [this](int count) { return count ? std::min(count, compact_ ? 3 : 4) * 66 : compact_ ? 132 : 164; };
     archiveQueue_->setFixedHeight(queueHeight(archives_->count())); sourceQueue_->setFixedHeight(queueHeight(sources_->count()));
     archiveCount_->setText(QStringLiteral("压缩包 %1 组 · 媒体 %2 组 · 辅助文件 %3 个")
         .arg(controller_.archives.size()).arg(controller_.mediaInputs.size()).arg(controller_.ignoredInputFiles.size()));
     sourceCount_->setText(QStringLiteral("文件 · %1 个输入项目").arg(sources_->count()));
+    archiveCount_->setVisible(archives_->count() || !controller_.ignoredInputFiles.isEmpty());
+    sourceCount_->setVisible(sources_->count() > 0);
+    syncQueueActions();
 }
 void ArchiveWindow::refreshTasks() {
     const int row = tasks_->currentRow(); tasks_->clear();
     for (const auto& task : controller_.tasks) AddItem(tasks_, task.name, task.detail, task.success ? QStringLiteral("✓") : QStringLiteral("!"), QColor(task.success ? theme::Success : theme::Error), task.output);
-    tasks_->setCurrentRow(std::min(row, tasks_->count() - 1)); taskQueue_->setCurrentIndex(tasks_->count() ? 1 : 0);
+    tasks_->setCurrentRow(row < 0 ? tasks_->count() - 1 : std::min(row, tasks_->count() - 1)); taskQueue_->setCurrentIndex(tasks_->count() ? 1 : 0);
     taskQueue_->setFixedHeight(tasks_->count() ? std::min(tasks_->count(), compact_ ? 3 : 4) * 66 : compact_ ? 126 : 154);
     taskCount_->setText(QStringLiteral("本次会话 · %1 条记录").arg(tasks_->count()));
+    syncOutputAction();
 }
 void ArchiveWindow::syncOptions() {
     QScopedValueRollback<bool> syncing(synchronizing_, true);
+    auto choice = [](QTabBar* tabs, bool checked) { tabs->setCurrentIndex(checked ? 1 : 0); };
     auto text = [](QLineEdit* edit, const QString& value) { if (edit->text() != value) { QSignalBlocker block(edit); edit->setText(value); } };
     text(extractDestination_, controller_.extractDestination); text(compressDestination_, controller_.compressDestination);
     text(extractPassword_, controller_.extractPassword); text(compressPassword_, controller_.compressPassword); text(archiveName_, controller_.archiveName);
@@ -835,35 +873,69 @@ void ArchiveWindow::syncOptions() {
     segment(level_, controller_.compression.level == 1 ? 0 : controller_.compression.level == 9 ? 2 : 1);
     segment(extractMode_, controller_.subfolder || controller_.organizeMedia ? 0 : 1);
     extractMode_->setEnabled(!controller_.busy() && !controller_.organizeMedia);
-    hideOnBlur_->SyncChecked(controller_.hideOnBlur);
-    rememberGeometry_->SyncChecked(controller_.rememberGeometry);
-    autoPasswords_->SyncChecked(controller_.autoPasswords);
-    autoNested_->SyncChecked(controller_.autoNested || controller_.organizeMedia);
+    choice(hideOnBlur_, controller_.hideOnBlur);
+    choice(rememberGeometry_, controller_.rememberGeometry);
+    choice(autoPasswords_, controller_.autoPasswords);
+    choice(autoNested_, controller_.autoNested || controller_.organizeMedia);
     autoNested_->setEnabled(!controller_.busy() && !controller_.organizeMedia);
-    correctName_->setEnabled(!controller_.busy() && archives_->currentRow() >= 0 && static_cast<size_t>(archives_->currentRow()) < controller_.archives.size());
-    organizeMedia_->SyncChecked(controller_.organizeMedia);
+    choice(organizeMedia_, controller_.organizeMedia);
+    extractMode_->setToolTip(controller_.organizeMedia ? QStringLiteral("媒体整理使用独立目录") : QStringLiteral("已有文件不会覆盖"));
+    autoNested_->setToolTip(controller_.organizeMedia ? QStringLiteral("媒体整理会解压所有内层压缩包")
+        : QStringLiteral("逐层解压，成功后清理中间包；原始压缩包保留"));
+    extractPassword_->setPlaceholderText(controller_.autoPasswords ? QStringLiteral("自动匹配密码单") : QStringLiteral("输入密码（可选）"));
+    extractPassword_->setToolTip(controller_.autoPasswords ? QStringLiteral("手动输入的密码优先") : QString{});
+    syncQueueActions();
 }
 void ArchiveWindow::syncBusy() {
     for (auto* control : editable_) control->setEnabled(!controller_.busy());
     extractMode_->setEnabled(!controller_.busy() && !controller_.organizeMedia);
     autoNested_->setEnabled(!controller_.busy() && !controller_.organizeMedia);
-    correctName_->setEnabled(!controller_.busy() && archives_->currentRow() >= 0 && static_cast<size_t>(archives_->currentRow()) < controller_.archives.size());
-    shell_->refresh->setEnabled(!controller_.busy()); syncProgress();
+    syncQueueActions(); syncProgress();
     syncPasswordActions();
     syncUpdates();
-    status_->setVisible(controller_.busy() || (page_ != "general" && page_ != "about"));
+    syncStatus();
+    if (controller_.busy()) setDropActive(false);
+}
+void ArchiveWindow::syncQueueActions() {
+    if (!archives_ || !sources_) return;
+    const bool idle = !controller_.busy();
+    auto enable = [this, idle](const char* name, bool available) {
+        if (auto* button = findChild<QPushButton*>(QString::fromLatin1(name))) button->setEnabled(idle && available);
+    };
+    const int selected = archives_->currentRow();
+    enable("removeArchive", selected >= 0);
+    enable("removeSource", sources_->currentRow() >= 0);
+    enable("clearArchives", archives_->count() || !controller_.ignoredInputFiles.isEmpty());
+    enable("clearSources", sources_->count() > 0);
+    enable("startExtraction", archives_->count() > 0);
+    enable("testArchives", archives_->count() > 0);
+    enable("startCompression", sources_->count() > 0);
+    enable("correctName", selected >= 0 && static_cast<size_t>(selected) < controller_.archives.size()
+        && controller_.archives[selected].needsRename);
+    shell_->refresh->setEnabled(idle && archives_->count() > 0);
+}
+void ArchiveWindow::syncOutputAction() {
+    const int selected = tasks_->currentRow();
+    findChild<QPushButton*>("openOutput")->setEnabled(selected >= 0 && selected < controller_.tasks.size()
+        && QFileInfo(controller_.tasks[selected].output).isDir());
+}
+void ArchiveWindow::syncStatus() {
+    status_->setText(controller_.status());
+    status_->setVisible(!controller_.status().isEmpty() && (controller_.busy() || (page_ != "general" && page_ != "about")));
 }
 void ArchiveWindow::syncUpdates() {
     if (!updateStatus_) return;
     auto& update = controller_.updates();
     updateStatus_->setText(update.status()); updateNotes_->setText(update.release().notes); updateNotes_->setVisible(!update.release().notes.isEmpty());
     checkUpdate_->setEnabled(!update.busy());
+    checkUpdate_->setVisible(update.state() == UpdateManager::State::Idle || update.state() == UpdateManager::State::Error);
     downloadUpdate_->setVisible(update.state() == UpdateManager::State::Available);
     installUpdate_->setVisible(update.state() == UpdateManager::State::Ready);
     installUpdate_->setEnabled(!controller_.busy());
     installUpdate_->setToolTip(controller_.busy() ? QStringLiteral("当前任务结束后可以安装更新") : QStringLiteral("安装时关闭程序，完成后重新启动"));
     cancelUpdate_->setVisible(update.state() == UpdateManager::State::Checking || update.state() == UpdateManager::State::Downloading);
-    autoUpdate_->SyncChecked(update.autoCheck());
+    const QScopedValueRollback<bool> syncing(synchronizing_, true); autoUpdate_->setCurrentIndex(update.autoCheck() ? 1 : 0);
+    if (page_ == "about") filterSettings();
 }
 void ArchiveWindow::syncProgress() {
     const auto total = controller_.total(), completed = controller_.completed();
@@ -892,6 +964,7 @@ void ArchiveWindow::filterSettings() {
             if (matches && firstVisible < 0) firstVisible = i;
         }
         if (!passwordLists_->currentItem() || passwordLists_->currentItem()->isHidden()) passwordLists_->setCurrentRow(firstVisible);
+        passwordQueue_->setCurrentIndex(firstVisible >= 0 ? 1 : query.isEmpty() ? 0 : 2);
         return;
     }
     if (page_ != "general" && page_ != "about") return;
@@ -903,6 +976,19 @@ void ArchiveWindow::filterSettings() {
         const bool visible = query.isEmpty() || row->property("searchText").toString().contains(query, Qt::CaseInsensitive);
         row->setVisible(visible); if (visible) ++matches;
     }
+    for (auto* card : page->findChildren<QFrame*>()) {
+        if (!card->property("settingsCard").toBool()) continue;
+        QList<QFrame*> visibleRows;
+        for (auto* row : card->findChildren<QFrame*>(QString{}, Qt::FindDirectChildrenOnly))
+            if (row->property("settingsRow").toBool() && !row->isHidden()) visibleRows.append(row);
+        card->setVisible(!visibleRows.isEmpty());
+        for (auto* row : visibleRows) {
+            const bool last = row == visibleRows.last();
+            if (row->property("settingsLastRow").toBool() == last) continue;
+            row->setProperty("settingsLastRow", last); row->style()->unpolish(row); row->style()->polish(row);
+        }
+    }
+    if (page_ == "about") updateNotes_->setVisible(query.isEmpty() && !controller_.updates().release().notes.isEmpty());
     if (auto* empty = page->findChild<QLabel*>("settingsNoResults")) empty->setVisible(matches == 0);
 }
 void ArchiveWindow::run(ArchiveController::Operation operation) {
@@ -922,10 +1008,26 @@ void ArchiveWindow::closeEvent(QCloseEvent* event) {
 }
 void ArchiveWindow::dragEnterEvent(QDragEnterEvent* event) {
     if (!controller_.busy() && event->mimeData()->hasUrls()) {
-        for (const auto& url : event->mimeData()->urls()) if (url.isLocalFile()) { event->acceptProposedAction(); break; }
+        for (const auto& url : event->mimeData()->urls()) if (url.isLocalFile()) {
+            setDropActive(true); event->acceptProposedAction(); return;
+        }
+    }
+    event->ignore();
+}
+void ArchiveWindow::dragLeaveEvent(QDragLeaveEvent* event) {
+    setDropActive(false); event->accept();
+}
+void ArchiveWindow::setDropActive(bool active) {
+    for (const auto* name : {"archiveDropZone", "sourceDropZone"}) {
+        auto* card = findChild<QFrame*>(QString::fromLatin1(name));
+        const bool highlighted = active && ((page_ == "compress") == (card->objectName() == "sourceDropZone"));
+        if (card->property("dropActive").toBool() == highlighted) continue;
+        card->setProperty("dropActive", highlighted);
+        card->style()->unpolish(card); card->style()->polish(card); card->update();
     }
 }
 void ArchiveWindow::dropEvent(QDropEvent* event) {
+    setDropActive(false);
     if (controller_.busy()) { event->ignore(); return; }
     QStringList paths;
     for (const auto& url : event->mimeData()->urls()) if (url.isLocalFile()) paths.append(url.toLocalFile());

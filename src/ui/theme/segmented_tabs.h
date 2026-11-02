@@ -40,6 +40,13 @@ public:
     qreal PressScale(int index) const { return scales_.value(index, 1); }
     bool KeyboardFocusVisible() const { return keyboardFocus_ && hasFocus(); }
     void SetSegmentHeight(int height) { segmentHeight_ = height; setFixedHeight(height); updateGeometry(); }
+    QSize sizeHint() const override {
+        int width = 0;
+        for (int index = 0; index < count(); ++index)
+            if (isTabVisible(index)) width += tabSizeHint(index).width();
+        return {width, segmentHeight_};
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
 protected:
     QSize tabSizeHint(int index) const override {
         const int icon = tabIcon(index).isNull() ? 0 : 22;
@@ -51,7 +58,12 @@ protected:
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
         p.setPen(Qt::NoPen); p.setBrush(theme::RaisedColor(this));
         p.drawRoundedRect(QRectF(rect()).adjusted(.5, .5, -.5, -.5), 7, 7);
-        if (!IndicatorRect().isEmpty()) motion::Thumb(p, IndicatorRect(), false, this);
+        if (!IndicatorRect().isEmpty()) {
+            p.save();
+            if (!isEnabled()) p.setOpacity(.45);
+            motion::Thumb(p, IndicatorRect(), false, this);
+            p.restore();
+        }
         for (int index = 0; index < count(); ++index) {
             if (!isTabVisible(index)) continue;
             const auto segment = segmentRect(index);

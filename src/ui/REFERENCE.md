@@ -39,11 +39,10 @@ feedback and easing curve are shared by the main window and tray popup.
 Pages and input controls live for the lifetime of their window. Navigation
 only selects an existing QStackedWidget page; it does not recreate controls.
 The password-list manager uses the same settings tabs, card rows, list delegate,
-typography and toggle as the existing pages. Its page stays alive alongside
-the other five pages in both windows; only explicitly opened editors display
-password values. The native preview runner seeds an isolated temporary library.
-The extraction page's nested-extraction and media-organization switches reuse
-the existing settings-row typography and toggle, and share their state between
+typography and segmented choices as the existing pages. Its page stays alive alongside
+the other five pages in both windows. The native preview runner seeds an isolated temporary library.
+The extraction page's nested-extraction and media-organization choices reuse
+the existing settings-row typography and segmented control, and share their state between
 both windows. Media organization selects independent output directories and
 recursive extraction while it is enabled.
 
@@ -81,8 +80,29 @@ These native captures are the visual review artifacts.
 the original screenshot's Chinese title, description and secondary tab text.
 They read the supplied PNG in place. The native-font comparison revealed the
 regular-versus-semibold title mismatch that declaration-only tests missed.
-The SVG header icons, search-field geometry, toggle diameter/motion and popup
+The SVG header icons, search-field geometry and popup
 header spacing are also calibrated to the supplied screenshots.
+
+## Current control and interaction alignment
+
+The locally installed Magpie 0.1.2738 settings pages were inspected on 2026-11-03.
+Boolean settings now use its explicit off/on segmented choices. They share the
+existing selection animation and keyboard behavior with format and compression
+choices. Minimum widths follow the painted segments, avoiding Qt's extra tab
+scroll-button reservation. Synchronization updates the selection indicator in
+both visible windows without writing preferences again.
+
+Simple settings use one-line rows; descriptions are reserved for consequences
+such as deleting non-media extraction output and actual update status. Import
+formats and optional syntax are available on the relevant controls. Idle
+instructions, feature summaries and repeated empty-state descriptions have been
+removed. Queue availability, selection, drag highlights, disabled actions and
+search empty states provide feedback at the point of interaction.
+
+The macOS review compiles production UI sources against isolated substitutes for
+Windows archive, storage and update services. It verifies UI behavior and captures
+main and tray layouts, including the 440-pixel tray width. This does not replace
+the Windows integration tests or native font/DPI verification described above.
 
 `cmake/DeployWindowsRuntime.cmake` is also imported from this commit to deploy
 the non-Qt dependencies of MSYS2 builds alongside the Qt plugins.
