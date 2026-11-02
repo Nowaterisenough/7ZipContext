@@ -22,7 +22,7 @@ concurrency:
 
 env:
   BUILD_TYPE: Release
-  QT_VERSION: '6.8.3'
+  QT_VERSION: '6.12.0'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
   DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
 
@@ -61,6 +61,8 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
+          # Qt 6.11+ separates Windows repositories by compiler architecture.
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7'
           cache: true
 
       - name: Configure
@@ -73,6 +75,13 @@ jobs:
 
       - name: Test archive engine and desktop workflows
         run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure --timeout 120
+
+      - name: Render native Windows UI previews
+        run: |
+          cmake --build build --config $env:BUILD_TYPE --target RenderUiReferences --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "build/$env:BUILD_TYPE/RenderUiReferences.exe" build/native-previews
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Deploy application and Qt runtime
         run: |
@@ -125,6 +134,15 @@ jobs:
             build/msi-*.log
             build/update-helper-tests-*/*.log
             build/update-helper-tests-*/update-result.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload native Windows UI previews
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-x64-ui-previews
+          path: build/native-previews/*
           if-no-files-found: ignore
           retention-days: 14
 

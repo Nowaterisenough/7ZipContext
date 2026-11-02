@@ -138,7 +138,7 @@ GitHub Actions 工作流为 `.github/workflows/build.yml`，名称是 **Build an
 - `SHA256SUMS.txt`：发布附件的 SHA-256 校验值。
 - `build-info.json`：版本、源码提交及打包检查信息。
 
-工作流固定 Windows 2022、MSVC 2022 和 Qt 6.8.3，WiX 及扩展固定为 6.0.2，Actions 固定到具体提交。编译后运行八组程序测试、发布版本测试及 Windows PowerShell 更新/回滚测试；打包时检查程序版本、MSI 中每个文件及大小，再解开便携包，在仅包含系统目录的 PATH 下运行启动检查。随后在隔离的云端机器上实际安装 MSI，核对安装记录、开始菜单和右键菜单，运行已安装程序的启动检查，再卸载并验证清理结果。包内包含完整运行库、更新脚本与逐文件 SHA-256 更新清单。MSVC 运行库随包部署，发布任务下载产物后会再次核验 SHA-256。测试、打包或实际安装失败时不发布，日志保留在 Actions artifacts。
+工作流固定 Windows 2022、MSVC 2022 和 Qt 6.12.0，WiX 及扩展固定为 6.0.2，Actions 固定到具体提交。Qt 安装器固定为 aqtinstall 提交 `5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7`，支持 Qt 6.11 起按编译器架构拆分的 Windows 下载目录。编译后运行八组程序测试、发布版本测试及 Windows PowerShell 更新/回滚测试，并生成 Windows 原生界面截图，保存为 `windows-x64-ui-previews` artifact；打包时检查程序版本、MSI 中每个文件及大小，再解开便携包，在仅包含系统目录的 PATH 下运行启动检查。随后在隔离的云端机器上实际安装 MSI，核对安装记录、开始菜单和右键菜单，运行已安装程序的启动检查，再卸载并验证清理结果。包内包含完整运行库、更新脚本与逐文件 SHA-256 更新清单。MSVC 运行库随包部署，发布任务下载产物后会再次核验 SHA-256。测试、打包或实际安装失败时不发布，日志保留在 Actions artifacts。
 
 无需配置个人访问令牌，发布使用 GitHub 自动提供的 `GITHUB_TOKEN`；只有发布任务请求 `contents: write` 权限。工作流必须先提交并推送到 GitHub 才会触发。
 
