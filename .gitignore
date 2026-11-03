@@ -32,6 +32,7 @@ cmake-build-*/
 
 # Generated files
 __pycache__/
+/aqtinstall.log
 dummy.exe
 passwords.txt
 

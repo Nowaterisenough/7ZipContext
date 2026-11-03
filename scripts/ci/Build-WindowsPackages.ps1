@@ -78,7 +78,13 @@ Push-Location $repository
 try {
     $commit = & git rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot determine source commit.' }
-    $dirty = -not [string]::IsNullOrWhiteSpace((& git status --porcelain | Out-String))
+    $changes = @(& git status --porcelain)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine source checkout state.' }
+    $dirty = $changes.Count -gt 0
+    if ($dirty) {
+        $changes | Write-Host
+        throw 'Release packages must be built from an unchanged source checkout.'
+    }
     $toolVersion = (Get-Content -LiteralPath '.config/dotnet-tools.json' -Raw | ConvertFrom-Json).tools.wix.version
     & $DotnetExecutable tool restore
     if ($LASTEXITCODE -ne 0) { throw 'WiX tool restore failed.' }
