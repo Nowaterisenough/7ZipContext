@@ -31,6 +31,7 @@ cmake-build-*/
 *.msix
 
 # Generated files
+__pycache__/
 dummy.exe
 passwords.txt
 

@@ -133,12 +133,16 @@ GitHub Actions 工作流为 `.github/workflows/build.yml`，名称是 **Build an
 
 发布附件包括：
 
-- `7ZipContext-版本-windows-x64.msi`：安装包，包含桌面程序和右键菜单扩展。
-- `7ZipContext-版本-windows-x64-portable.zip`：便携包，完整解压后运行 `7ZipContextApp.exe`。
+- `7ZipContext-版本-windows-x64-msvc.msi` / `-msvc-portable.zip`：MSVC 构建的安装包和便携包。
+- `7ZipContext-版本-windows-x64-ucrt.msi` / `-ucrt-portable.zip`：MSYS2 UCRT64 GCC 构建的安装包和便携包。
+- 两套 MSI 是同一应用的替代构建；安装同版本的另一套 MSI 会替换现有安装，不并排安装。便携包应解压到各自独立的目录。
+- 旧文件名 `7ZipContext-版本-windows-x64.msi` / `-portable.zip` 保留为 MSVC 包的兼容别名，保证旧版本自动更新可用。新版本在线更新只选择自身工具链的附件。
 - `SHA256SUMS.txt`：发布附件的 SHA-256 校验值。
-- `build-info.json`：版本、源码提交及打包检查信息。
+- `build-info-msvc.json` / `build-info-ucrt.json`：各自的编译器名称、实际版本、Qt 版本、源码提交和打包检查结果；`build-info.json` 汇总两个构建。
 
-工作流固定 Windows 2022、MSVC 2022 和 Qt 6.12.0，WiX 及扩展固定为 6.0.2，Actions 固定到具体提交。Qt 安装器固定为 aqtinstall 提交 `5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7`，支持 Qt 6.11 起按编译器架构拆分的 Windows 下载目录。编译后运行八组程序测试、发布版本测试及 Windows PowerShell 更新/回滚测试，并生成 Windows 原生界面截图，保存为 `windows-x64-ui-previews` artifact；打包时检查程序版本、MSI 中每个文件及大小，再解开便携包，在仅包含系统目录的 PATH 下运行启动检查。随后在隔离的云端机器上实际安装 MSI，核对安装记录、开始菜单和右键菜单，运行已安装程序的启动检查，再卸载并验证清理结果。包内包含完整运行库、更新脚本与逐文件 SHA-256 更新清单。MSVC 运行库随包部署，发布任务下载产物后会再次核验 SHA-256。测试、打包或实际安装失败时不发布，日志保留在 Actions artifacts。
+工作流在 `windows-latest` 上并行构建 MSVC 和 MSYS2 UCRT64 两个版本，Qt 固定为 6.12.0。MSVC 动态选择最新已安装的稳定 Visual Studio 和最高版本的 C++ 工具集；UCRT64 先完整更新 MSYS2，再安装仓库中的最新 GCC。两套均用 Ninja，记录实际编译器和 Qt 版本。MSVC Qt 使用兼容的 `win64_msvc2022_64` 二进制包，aqtinstall 固定为支持按架构下载的提交 `5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7`；UCRT64 从 pacman 安装 `qt6-base` 和 `qt6-svg`。配置阶段检查两套 Qt 均与指定版本一致；MSYS2 滚动仓库升级 Qt 后应协调更新 Qt 版本，不能静默混用。
+
+两个构建各自运行八组程序测试、Windows PowerShell 更新/回滚测试、原生界面截图和 MSI/便携包校验，并在隔离 runner 上实际安装 MSI、检查启动和右键菜单、卸载并验证清理结果。MSVC 包携带对应 CRT；UCRT64 包递归收集 GCC、Qt 和插件依赖 DLL，并在只保留系统目录的 PATH 下验证启动。两套均通过后，发布合并步骤核对源码提交、版本、工具链及所有文件的 SHA-256，生成统一校验清单，随后一次性发布全部附件。任一构建或校验失败均不发布。WiX 及扩展固定为 6.0.2，Actions 固定到具体提交。每套的日志、截图和包分别保存在带 `msvc` / `ucrt` 后缀的 Actions artifacts，合并产物为 `windows-x64-release`。
 
 无需配置个人访问令牌，发布使用 GitHub 自动提供的 `GITHUB_TOKEN`；只有发布任务请求 `contents: write` 权限。工作流必须先提交并推送到 GitHub 才会触发。
 
@@ -149,10 +153,10 @@ cmake -S . -B build -D7ZIPCONTEXT_VERSION=1.1.0
 cmake --build build --config Release
 cmake --install build --config Release --prefix build/ci-install
 ./tests/ReleaseVersionTests.ps1
-./scripts/ci/Build-WindowsPackages.ps1 -Version 1.1.0 -InstallDir build/ci-install -OutputDir build/release-local
+./scripts/ci/Build-WindowsPackages.ps1 -Version 1.1.0 -Toolchain msvc -InstallDir build/ci-install -OutputDir build/release-local
 ```
 
-MSVC 构建另加 `-MsvcRuntime`，从已安装的 Visual Studio 复制 x64 CRT；MinGW 构建由 CMake 部署对应运行库，不加该开关。输出目录必须为空。脚本只构建并核验安装包，不会安装 MSI 或注册本机右键菜单。
+打包时指定 `-Toolchain msvc` 或 `-Toolchain ucrt`，并通过 `-BuildDirectory` 指定生成 `toolchain-info.json` 的构建目录（默认为 `build`）。脚本核对实际构建元数据与所选工具链；MSVC 自动复制 x64 CRT，UCRT64 由 CMake 部署对应运行库。输出目录必须为空。脚本只构建并核验安装包，不会安装 MSI 或注册本机右键菜单。
 
 ## 测试
 

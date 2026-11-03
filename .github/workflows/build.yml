@@ -27,14 +27,40 @@ env:
   DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
 
 jobs:
-  build:
-    name: Windows x64 build, tests and packages
-    runs-on: windows-2022
-    timeout-minutes: 45
+  version:
+    name: Resolve shared release version
+    runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release version calculation
+        shell: pwsh
+        run: ./tests/ReleaseVersionTests.ps1
+      - name: Calculate release version
+        id: version
+        shell: pwsh
+        run: ./scripts/ci/Get-ReleaseVersion.ps1
+      - name: Test release artifact assembly
+        shell: pwsh
+        run: python tests/ReleasePackagesTests.py
+
+  build:
+    name: Windows x64 (${{ matrix.toolchain }})
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [msvc, ucrt]
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
     defaults:
       run:
         shell: pwsh
@@ -46,50 +72,93 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Test release version calculation
-        run: ./tests/ReleaseVersionTests.ps1
-
       - name: Test optional shell registration without changing system policy
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/RegistrationTests.ps1
 
-      - name: Calculate release version
-        id: version
-        run: ./scripts/ci/Get-ReleaseVersion.ps1
+      - name: Select newest installed stable MSVC toolset
+        if: matrix.toolchain == 'msvc'
+        id: msvc
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'MSVC installation not found.' }
+          $toolset = Get-ChildItem (Join-Path $vs 'VC/Tools/MSVC') -Directory |
+            Where-Object Name -Match '^\d+\.\d+\.\d+$' | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $toolset) { throw 'MSVC toolset not found.' }
+          "toolset=$($toolset.Name)" >> $env:GITHUB_OUTPUT
+          Write-Host "Using $vs / MSVC $($toolset.Name)"
 
-      - name: Install Qt for MSVC 2022
+      - name: Activate latest MSVC
+        if: matrix.toolchain == 'msvc'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+          toolset: ${{ steps.msvc.outputs.toolset }}
+
+      - name: Install Qt for the MSVC ABI
+        if: matrix.toolchain == 'msvc'
         uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
-          # Qt 6.11+ separates Windows repositories by compiler architecture.
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7'
           cache: true
 
-      - name: Configure
+      - name: Install latest UCRT64 GCC and Qt
+        if: matrix.toolchain == 'ucrt'
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-svg
+
+      - name: Activate UCRT64 tools for PowerShell
+        if: matrix.toolchain == 'ucrt'
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-D7ZIPCONTEXT_VERSION=$env:RELEASE_VERSION" "-D7ZIPCONTEXT_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY"
+          MSYS_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $prefix = Join-Path $env:MSYS_ROOT 'ucrt64'
+          (Join-Path $prefix 'bin') >> $env:GITHUB_PATH
+          "QT_ROOT_DIR=$prefix" >> $env:GITHUB_ENV
+
+      - name: Configure and record toolchain
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          $qtVersion = & (Join-Path $env:QT_ROOT_DIR 'bin/qmake.exe') -query QT_VERSION
+          if ($LASTEXITCODE -ne 0 -or $qtVersion -ne $env:QT_VERSION) { throw "Expected Qt $env:QT_VERSION, found $qtVersion" }
+          if ($env:TOOLCHAIN -eq 'ucrt') { $env:CC = 'gcc'; $env:CXX = 'g++'; $env:RC = 'windres' }
+          else { $env:CC = 'cl'; $env:CXX = 'cl'; $env:RC = 'rc' }
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-D7ZIPCONTEXT_VERSION=$env:RELEASE_VERSION" "-D7ZIPCONTEXT_UPDATE_REPOSITORY=$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content build/toolchain-info.json
 
       - name: Build
-        run: cmake --build build --config $env:BUILD_TYPE --parallel 4
+        run: cmake --build build --parallel 4
 
       - name: Test archive engine and desktop workflows
-        run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure --timeout 120
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
       - name: Render native Windows UI previews
         run: |
-          cmake --build build --config $env:BUILD_TYPE --target RenderUiReferences --parallel 4
+          cmake --build build --target RenderUiReferences --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "build/$env:BUILD_TYPE/RenderUiReferences.exe" build/native-previews
+          & build/RenderUiReferences.exe build/native-previews
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Deploy application and Qt runtime
         run: |
-          cmake --install build --config $env:BUILD_TYPE --prefix build/ci-install 2>&1 | Tee-Object -FilePath build/deploy.log
+          cmake --install build --prefix build/ci-install 2>&1 | Tee-Object -FilePath build/deploy.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test update installation and rollback with Windows PowerShell
-        run: ./tests/UpdateHelperTests.ps1 -RuntimeDirectory build/ci-install -FailureExecutable "build/$env:BUILD_TYPE/UpdateSmokeFailure.exe"
+        run: ./tests/UpdateHelperTests.ps1 -RuntimeDirectory build/ci-install -FailureExecutable build/UpdateSmokeFailure.exe
 
       - name: Install .NET for the pinned WiX tool
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
@@ -98,24 +167,24 @@ jobs:
 
       - name: Package and verify MSI and portable ZIP
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          TOOLCHAIN: ${{ matrix.toolchain }}
         run: |
           Start-Transcript -Path build/package.log
           try {
-            ./scripts/ci/Build-WindowsPackages.ps1 -Version $env:RELEASE_VERSION -InstallDir build/ci-install -OutputDir build/release-packages -MsvcRuntime
+            ./scripts/ci/Build-WindowsPackages.ps1 -Version $env:RELEASE_VERSION -Toolchain $env:TOOLCHAIN -InstallDir build/ci-install -OutputDir build/release-packages
           } finally {
             Stop-Transcript
           }
 
       - name: Install and uninstall the MSI on the isolated runner
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: ./tests/InstallerTests.ps1 -Package "build/release-packages/7ZipContext-$env:RELEASE_VERSION-windows-x64.msi" -AllowMachineInstall
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: ./tests/InstallerTests.ps1 -Package "build/release-packages/7ZipContext-$env:RELEASE_VERSION-windows-x64-$env:TOOLCHAIN.msi" -AllowMachineInstall
 
       - name: Upload release packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-x64-packages
+          name: windows-x64-${{ matrix.toolchain }}-packages
           path: build/release-packages/*
           if-no-files-found: error
           compression-level: 0
@@ -125,10 +194,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-x64-test-logs
+          name: windows-x64-${{ matrix.toolchain }}-test-logs
           path: |
             build/Testing/Temporary/*.log
             build/*-tests.log
+            build/toolchain-info.json
             build/deploy.log
             build/package.log
             build/msi-*.log
@@ -141,14 +211,40 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-x64-ui-previews
+          name: windows-x64-${{ matrix.toolchain }}-ui-previews
           path: build/native-previews/*
           if-no-files-found: ignore
           retention-days: 14
 
+  assemble:
+    name: Verify both release variants
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: windows-x64-*-packages
+          path: packages
+          merge-multiple: true
+      - name: Verify and assemble release assets
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.version.outputs.commit }}
+        run: python3 scripts/ci/Merge-ReleasePackages.py packages release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --qt-version "$QT_VERSION"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-x64-release
+          path: release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [version, assemble]
     if: >-
       (github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
@@ -158,13 +254,13 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: release-${{ needs.build.outputs.tag }}
+      group: release-${{ needs.version.outputs.tag }}
       cancel-in-progress: false
     steps:
-      - name: Download verified packages
+      - name: Download both verified variants
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: windows-x64-packages
+          name: windows-x64-release
           path: release
 
       - name: Verify artifact checksums
@@ -175,8 +271,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.build.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.version.outputs.commit }}
         run: |
           response=$(mktemp)
           error=$(mktemp)
@@ -197,14 +293,19 @@ jobs:
       - name: Publish MSI, portable ZIP and SHA-256 checksums
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ needs.build.outputs.tag }}
-          target_commitish: ${{ needs.build.outputs.commit }}
-          name: 7-Zip Context v${{ needs.build.outputs.version }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ needs.version.outputs.commit }}
+          name: 7-Zip Context v${{ needs.version.outputs.version }}
           generate_release_notes: true
+          body: |
+            两个版本均使用 Qt 6.12：文件名含 msvc 的版本使用最新 MSVC，含 ucrt 的版本使用 MSYS2 UCRT64 GCC。
+            两套 MSI 是同一应用的替代构建，不并排安装。在线更新保持所选工具链。
+            无工具链后缀的安装包和便携包是 MSVC 兼容别名，供旧版自动更新使用。
+            实际编译器和 Qt 版本见各自的 build-info 文件。
           fail_on_unmatched_files: true
           make_latest: true
           files: |
             release/*.msi
             release/*.zip
-            release/build-info.json
+            release/build-info*.json
             release/SHA256SUMS.txt
