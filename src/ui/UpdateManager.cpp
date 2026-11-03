@@ -77,14 +77,16 @@ UpdateManager::~UpdateManager() {
 void UpdateManager::setAutoCheck(bool enabled) { autoCheck_ = enabled; QSettings(SettingsPath(), QSettings::IniFormat).setValue("Updates/AutoCheck", enabled); emit changed(); }
 void UpdateManager::setState(State state, const QString& text) { state_ = state; status_ = text; emit changed(); }
 bool UpdateManager::newer(const QString& candidate, const QString& current) { return Version(candidate) && Version(current) && QVersionNumber::fromString(candidate) > QVersionNumber::fromString(current); }
-bool UpdateManager::parseRelease(const QByteArray& data, const QString& repository, const QString& mode, UpdateRelease& release, QString& error) {
+bool UpdateManager::parseRelease(const QByteArray& data, const QString& repository, const QString& mode, UpdateRelease& release, QString& error, const QString& toolchain) {
     release = {}; error.clear();
+    const auto variant = toolchain.isEmpty() ? QString::fromLatin1(appbuild::Toolchain) : toolchain;
+    if (variant != "msvc" && variant != "ucrt") { error = QStringLiteral("不支持的更新工具链"); return false; }
     const auto object = QJsonDocument::fromJson(data).object();
     const auto tag = object.value("tag_name").toString();
     if (!tag.startsWith('v') || !Version(tag.mid(1)) || object.value("draft").toBool() || object.value("prerelease").toBool()) { error = QStringLiteral("更新服务未返回有效的正式版本"); return false; }
     release.version = tag.mid(1); release.notes = object.value("body").toString().left(8000);
     release.page = QUrl("https://github.com/" + repository + "/releases/tag/" + tag);
-    release.filename = "7ZipContext-" + release.version + "-windows-x64" + (mode == "msi" ? ".msi" : "-portable.zip");
+    release.filename = "7ZipContext-" + release.version + "-windows-x64-" + variant + (mode == "msi" ? ".msi" : "-portable.zip");
     int packages = 0, checksums = 0;
     for (const auto& value : object.value("assets").toArray()) {
         const auto asset = value.toObject(); const auto name = asset.value("name").toString(); const QUrl url(asset.value("browser_download_url").toString());

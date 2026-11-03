@@ -2,4 +2,5 @@
 namespace appbuild {
 inline constexpr char Version[] = "@APP_VERSION@";
 inline constexpr char UpdateRepository[] = "@7ZIPCONTEXT_UPDATE_REPOSITORY@";
+inline constexpr char Toolchain[] = "@APP_TOOLCHAIN@";
 }

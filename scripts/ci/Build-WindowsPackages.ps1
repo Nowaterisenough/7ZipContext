@@ -1,15 +1,20 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
+    [Parameter(Mandatory = $true)][ValidateSet('msvc','ucrt')][string]$Toolchain,
     [string]$InstallDir = 'build/ci-install',
     [string]$OutputDir = 'build/release-packages',
     [string]$DotnetExecutable = 'dotnet',
-    [switch]$MsvcRuntime
+    [string]$BuildDirectory = 'build'
 )
 $ErrorActionPreference = 'Stop'
 if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Expected a three-part numeric version.' }
 $numericVersion = [version]$Version
 if ($numericVersion.Major -gt 255 -or $numericVersion.Minor -gt 255 -or $numericVersion.Build -gt 65535) { throw 'Version exceeds MSI limits.' }
 $repository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
+$buildInfo = Get-Content -LiteralPath (Join-Path $BuildDirectory 'toolchain-info.json') -Raw | ConvertFrom-Json
+if ($buildInfo.toolchain -ne $Toolchain -or -not $buildInfo.compilerVersion -or $buildInfo.qtVersion -notmatch '^6\.12\.') {
+    throw 'Build metadata does not match the requested toolchain or Qt 6.12.'
+}
 $install = (Resolve-Path -LiteralPath $InstallDir).Path
 $output = [IO.Path]::GetFullPath($OutputDir)
 if ($output -eq $install -or $output.StartsWith($install.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Package output must be outside the installed runtime directory.' }
@@ -31,7 +36,7 @@ foreach ($item in Get-ChildItem -LiteralPath $install -Recurse -Force) {
 foreach ($script in 'register.ps1','unregister.ps1') {
     Copy-Item -LiteralPath (Join-Path $repository "installer/$script") -Destination (Join-Path $stage $script) -Force
 }
-if ($MsvcRuntime) {
+if ($Toolchain -eq 'msvc') {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'Cannot locate the MSVC redistributable runtime.' }
@@ -66,7 +71,7 @@ foreach ($name in 'License.txt','copying.txt','unRarLicense.txt') {
 $updateFiles = @(Get-ChildItem -LiteralPath $stage -File -Recurse | Sort-Object FullName | ForEach-Object {
     [ordered]@{ path = [IO.Path]::GetRelativePath($stage,$_.FullName).Replace('\','/'); size = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant() }
 })
-$updateManifest = [ordered]@{ format = 1; version = $Version; architecture = 'x64'; files = $updateFiles }
+$updateManifest = [ordered]@{ format = 1; version = $Version; architecture = 'x64'; toolchain = $Toolchain; files = $updateFiles }
 [IO.File]::WriteAllText((Join-Path $stage 'update-manifest.json'),($updateManifest | ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
 
 Push-Location $repository
@@ -83,7 +88,7 @@ try {
     }
     $runtime = Join-Path $work 'runtime-files.wxs'
     & (Join-Path $repository 'installer/collect-runtime.ps1') -StagingDir $stage -OutputFile $runtime
-    $msi = Join-Path $output "7ZipContext-$Version-windows-x64.msi"
+    $msi = Join-Path $output "7ZipContext-$Version-windows-x64-$Toolchain.msi"
     & $DotnetExecutable tool run wix -- build (Join-Path $repository 'installer/7ZipContext.wxs') $runtime `
         -d "StagingDir=$stage" -d "InstallerDir=$(Join-Path $repository 'installer')" -d "ProductVersion=$Version" `
         -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -arch x64 `
@@ -118,7 +123,7 @@ try {
     [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
 }
 
-$zip = Join-Path $output "7ZipContext-$Version-windows-x64-portable.zip"
+$zip = Join-Path $output "7ZipContext-$Version-windows-x64-$Toolchain-portable.zip"
 [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
 $smokeDirectory = Join-Path $work 'portable-check'
 [IO.Compression.ZipFile]::ExtractToDirectory($zip, $smokeDirectory)
@@ -132,8 +137,10 @@ try {
 
 [ordered]@{
     version = $Version; commit = $commit; dirtyWorkingTree = $dirty; architecture = 'x64'
+    toolchain = $Toolchain; qtVersion = $buildInfo.qtVersion
+    compilerId = $buildInfo.compilerId; compilerVersion = $buildInfo.compilerVersion
     wixVersion = $toolVersion; runtimeFiles = $sizes.Count; portableSmokeTest = 'passed'
-} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'build-info.json') -Encoding utf8
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output "build-info-$Toolchain.json") -Encoding utf8
 $checksums = @(Get-ChildItem -LiteralPath $output -File | Sort-Object Name | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $_.Name })
-[IO.File]::WriteAllText((Join-Path $output 'SHA256SUMS.txt'), ($checksums -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $output "SHA256SUMS-$Toolchain.txt"), ($checksums -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
 Get-ChildItem -LiteralPath $output -File | Select-Object Name,Length

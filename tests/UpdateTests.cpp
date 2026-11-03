@@ -1,4 +1,5 @@
 #include "ui/UpdateManager.h"
+#include "AppBuild.h"
 #include <QTest>
 #include <QNetworkReply>
 #include <QJsonDocument>
@@ -13,7 +14,7 @@
 
 namespace {
 const QString Repository = "example/archive";
-const QString Filename = "7ZipContext-1.2.0-windows-x64-portable.zip";
+const QString Filename = "7ZipContext-1.2.0-windows-x64-" + QString::fromLatin1(appbuild::Toolchain) + "-portable.zip";
 QByteArray Release(qint64 size = 7) {
     const QString base = "https://github.com/" + Repository + "/releases/download/v1.2.0/";
     return QJsonDocument(QJsonObject{{"tag_name", "v1.2.0"}, {"body", "Update notes"},
@@ -93,6 +94,35 @@ private slots:
         QVERIFY(!UpdateManager::parseChecksum(hash + "  other.zip", Filename, checksum));
     }
     void downloadsAndVerifiesFinalBytes_data() { QTest::addColumn<bool>("finalOnly"); QTest::newRow("ready-read") << false; QTest::newRow("finished-buffer") << true; }
+    void selectsOnlyMatchingToolchain_data() {
+        QTest::addColumn<QString>("toolchain"); QTest::addColumn<QString>("mode");
+        for (const auto& toolchain : {"msvc", "ucrt"}) for (const auto& mode : {"msi", "portable"})
+            QTest::newRow(qPrintable(QString(toolchain) + '-' + mode)) << QString(toolchain) << QString(mode);
+    }
+    void selectsOnlyMatchingToolchain() {
+        QFETCH(QString, toolchain); QFETCH(QString, mode);
+        const QString base = "https://github.com/" + Repository + "/releases/download/v1.2.0/";
+        auto object = QJsonDocument::fromJson(Release()).object();
+        QJsonArray assets;
+        for (const auto& variant : {QString{}, QString("-msvc"), QString("-ucrt")}) {
+            for (const auto& suffix : {".msi", "-portable.zip"}) {
+                const auto name = "7ZipContext-1.2.0-windows-x64" + variant + suffix;
+                assets.append(QJsonObject{{"name", name}, {"size", 7}, {"browser_download_url", base + name}});
+            }
+        }
+        assets.append(QJsonObject{{"name", "SHA256SUMS.txt"}, {"browser_download_url", base + "SHA256SUMS.txt"}});
+        object["assets"] = assets;
+        UpdateRelease release; QString error;
+        QVERIFY(UpdateManager::parseRelease(QJsonDocument(object).toJson(), Repository, mode, release, error, toolchain));
+        const auto expected = "7ZipContext-1.2.0-windows-x64-" + toolchain + (mode == "msi" ? ".msi" : "-portable.zip");
+        QCOMPARE(release.filename, expected); QCOMPARE(release.package, QUrl(base + expected));
+        QJsonArray missing;
+        for (const auto& asset : assets) if (asset.toObject()["name"].toString() != expected) missing.append(asset);
+        object["assets"] = missing;
+        QVERIFY(UpdateManager::parseRelease(QJsonDocument(object).toJson(), Repository, mode, release, error, toolchain));
+        QVERIFY(release.package.isEmpty()); // Never switch compilers or select a legacy alias automatically.
+        QVERIFY(!UpdateManager::parseRelease(QJsonDocument(object).toJson(), Repository, mode, release, error, "other"));
+    }
     void downloadsAndVerifiesFinalBytes() {
         QFETCH(bool, finalOnly); QTemporaryDir temp; Network network;
         const QByteArray payload("package"); const auto hash = QCryptographicHash::hash(payload, QCryptographicHash::Sha256).toHex();

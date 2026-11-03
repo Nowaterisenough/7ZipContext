@@ -20,7 +20,7 @@
     <Property Id="ARPPRODUCTICON" Value="ApplicationIcon.ico" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version is already installed." />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 

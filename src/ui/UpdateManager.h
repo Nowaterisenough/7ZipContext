@@ -37,7 +37,7 @@ public:
     void download();
     void cancel();
     bool install(QString& error);
-    static bool parseRelease(const QByteArray& data, const QString& repository, const QString& mode, UpdateRelease& release, QString& error);
+    static bool parseRelease(const QByteArray& data, const QString& repository, const QString& mode, UpdateRelease& release, QString& error, const QString& toolchain = {});
     static bool parseChecksum(const QByteArray& data, const QString& filename, QByteArray& checksum);
     static bool newer(const QString& candidate, const QString& current);
 signals:

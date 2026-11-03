@@ -293,6 +293,8 @@ add_library(SevenZipEngine OBJECT
 add_library(7ZipContext SHARED src/ContextMenu.cpp src/ContextMenu.def)
 set_target_properties(7ZipContext PROPERTIES PREFIX "")
 find_package(Qt6 6.6 REQUIRED COMPONENTS Widgets Network Svg)
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/toolchain-info.json" CONTENT
+    "{\n  \"toolchain\": \"${APP_TOOLCHAIN}\",\n  \"compilerId\": \"${CMAKE_CXX_COMPILER_ID}\",\n  \"compilerVersion\": \"${CMAKE_CXX_COMPILER_VERSION}\",\n  \"qtVersion\": \"${Qt6_VERSION}\"\n}\n")
 qt_add_library(ArchiveUi STATIC
     src/ui/ArchiveController.cpp src/ui/ArchiveController.h
     src/ui/ArchiveWindow.cpp src/ui/ArchiveWindow.h
@@ -455,12 +457,10 @@ install(CODE "
 ")
 install(SCRIPT ${qt_deploy_script})
 if(MINGW)
-    get_target_property(_qt_core_location Qt6::Core IMPORTED_LOCATION_RELEASE)
-    get_filename_component(_qt_bin_dir "${_qt_core_location}" DIRECTORY)
     get_filename_component(_compiler_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
     install(CODE "
         set(RUNTIME_APPLICATION \"\${CMAKE_INSTALL_PREFIX}/7ZipContextApp.exe\")
-        set(RUNTIME_QT_BIN_DIR \"${_qt_bin_dir}\")
+        set(RUNTIME_QT_BIN_DIR \"$<TARGET_FILE_DIR:Qt6::Core>\")
         set(RUNTIME_COMPILER_BIN_DIR \"${_compiler_bin_dir}\")
         set(CMAKE_GET_RUNTIME_DEPENDENCIES_PLATFORM windows+pe)
         set(CMAKE_GET_RUNTIME_DEPENDENCIES_TOOL objdump)
