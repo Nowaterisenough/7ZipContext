@@ -34,6 +34,23 @@ bool Asset(const QUrl& url, const QString& repository, const QString& version, c
     return Trusted(url) && url.host() == "github.com" && url.query().isEmpty() && url.fragment().isEmpty() &&
         url.path() == '/' + repository + "/releases/download/v" + version + '/' + filename;
 }
+QUrl AssetApi(const QString& repository, const QJsonObject& asset) {
+    const auto id = asset.value("id").toInteger();
+    if (id <= 0) return {};
+    return QUrl("https://api.github.com/repos/" + repository + "/releases/assets/" + QString::number(id));
+}
+QUrl FreshAssetUrl(QUrl url) {
+    // Get a fresh signed redirect even if an intermediary cached an expired one.
+    url.setQuery("download=1&retry=" + QUuid::createUuid().toString(QUuid::WithoutBraces));
+    return url;
+}
+QString TransferError(QNetworkReply* reply) {
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status && status != 200) return QStringLiteral("服务器返回 HTTP %1").arg(status);
+    if (reply->error() != QNetworkReply::NoError) return QStringLiteral("网络传输失败：%1").arg(reply->errorString());
+    if (status != 200) return QStringLiteral("服务器未返回有效的 HTTP 状态");
+    return {};
+}
 bool ManagedInstallation(const QString& directory) {
     const auto application = QFileInfo(QDir(directory).filePath("7ZipContextApp.exe")).canonicalFilePath();
     for (DWORD index = 0;; ++index) {
@@ -90,8 +107,8 @@ bool UpdateManager::parseRelease(const QByteArray& data, const QString& reposito
     int packages = 0, checksums = 0;
     for (const auto& value : object.value("assets").toArray()) {
         const auto asset = value.toObject(); const auto name = asset.value("name").toString(); const QUrl url(asset.value("browser_download_url").toString());
-        if (name == release.filename) { ++packages; if (Asset(url, repository, release.version, name)) { release.package = url; release.size = asset.value("size").toInteger(); } }
-        if (name == "SHA256SUMS.txt") { ++checksums; if (Asset(url, repository, release.version, name)) release.checksums = url; }
+        if (name == release.filename) { ++packages; if (Asset(url, repository, release.version, name)) { release.package = url; release.size = asset.value("size").toInteger(); release.packageApi = AssetApi(repository, asset); } }
+        if (name == "SHA256SUMS.txt") { ++checksums; if (Asset(url, repository, release.version, name)) { release.checksums = url; release.checksumsApi = AssetApi(repository, asset); } }
     }
     if (packages > 1 || checksums > 1) { error = QStringLiteral("更新附件重复，已停止更新"); return false; }
     return true;
@@ -113,27 +130,36 @@ void UpdateManager::configureReply(QNetworkReply* reply) {
         emit reply->redirectAllowed();
     });
 }
-void UpdateManager::fail(const QString& message) {
+void UpdateManager::discardTransfer() {
     if (reply_) { auto* reply = reply_.data(); reply_ = nullptr; reply->disconnect(this); reply->abort(); reply->deleteLater(); }
     if (file_) { file_->cancelWriting(); file_.reset(); } hash_.reset();
-    setState(State::Error, message);
 }
-void UpdateManager::fetch(const QUrl& url, qint64 limit, std::function<void(const QByteArray&)> finished) {
+void UpdateManager::fail(const QString& message) {
+    discardTransfer();
+    setState(state_ == State::Downloading ? State::DownloadFailed : State::Error, message);
+}
+void UpdateManager::fetch(const QUrl& url, qint64 limit, std::function<void(const QByteArray&)> finished, const QUrl& fallback) {
     if (!Trusted(url)) { fail(QStringLiteral("更新地址无效")); return; }
     QNetworkRequest request(url); request.setRawHeader("User-Agent", "7ZipContext/" + currentVersion_.toLatin1());
-    request.setRawHeader("Accept", "application/vnd.github+json"); request.setTransferTimeout(30000);
+    request.setRawHeader("Accept", state_ == State::Checking ? "application/vnd.github+json" : "application/octet-stream"); request.setTransferTimeout(30000);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
     auto* reply = network_->get(request); reply_ = reply; configureReply(reply);
     auto data = std::make_shared<QByteArray>();
     connect(reply, &QIODevice::readyRead, this, [this, reply, data, limit] {
-        if (reply_ != reply) return;
+        if (reply_ != reply || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) return;
         data->append(reply->readAll()); if (data->size() > limit) fail(QStringLiteral("更新服务返回的数据过大"));
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, data, limit, finished = std::move(finished)] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, data, limit, fallback, finished = std::move(finished)] {
         if (reply_ != reply) return;
+        const auto error = TransferError(reply);
+        if (!error.isEmpty()) {
+            if (!fallback.isEmpty()) {
+                discardTransfer(); fetch(FreshAssetUrl(fallback), limit, finished); return;
+            }
+            fail(QStringLiteral("无法读取更新信息：%1").arg(error)); return;
+        }
         data->append(reply->readAll());
-        const auto status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (reply->error() != QNetworkReply::NoError || status != 200 || data->size() > limit) { fail(QStringLiteral("无法读取更新信息（HTTP %1），请稍后重试").arg(status)); return; }
+        if (data->size() > limit) { fail(QStringLiteral("更新服务返回的数据过大")); return; }
         reply_ = nullptr; reply->deleteLater(); finished(*data);
     });
 }
@@ -150,36 +176,48 @@ void UpdateManager::check() {
     });
 }
 void UpdateManager::download() {
-    if (busy() || !newer(release_.version, currentVersion_) || release_.package.isEmpty() || release_.checksums.isEmpty() ||
+    if ((state_ != State::Available && state_ != State::DownloadFailed) || !newer(release_.version, currentVersion_) || release_.package.isEmpty() || release_.checksums.isEmpty() ||
         release_.size <= 0 || release_.size > 512LL * 1024 * 1024) return;
-    received_ = 0; packagePath_.clear(); setState(State::Downloading, QStringLiteral("正在获取更新校验值…"));
+    received_ = 0; packagePath_.clear(); workDirectory_.clear(); setState(State::Downloading, QStringLiteral("正在获取更新校验值…"));
     fetch(release_.checksums, 1024 * 1024, [this](const QByteArray& data) {
         if (!parseChecksum(data, release_.filename, checksum_)) { fail(QStringLiteral("更新校验清单无效")); return; }
         startPackageDownload();
-    });
+    }, release_.checksumsApi);
 }
-void UpdateManager::startPackageDownload() {
-    workDirectory_ = QDir(cacheDirectory_).filePath(release_.version + '-' + QUuid::createUuid().toString(QUuid::WithoutBraces));
+void UpdateManager::startPackageDownload(bool useApi) {
+    received_ = 0;
+    if (workDirectory_.isEmpty()) workDirectory_ = QDir(cacheDirectory_).filePath(release_.version + '-' + QUuid::createUuid().toString(QUuid::WithoutBraces));
     if (!QDir().mkpath(workDirectory_)) { fail(QStringLiteral("无法创建更新下载目录")); return; }
     file_ = std::make_unique<QSaveFile>(QDir(workDirectory_).filePath(release_.filename));
     if (!file_->open(QIODevice::WriteOnly)) { fail(QStringLiteral("无法保存更新包")); return; }
     hash_ = std::make_unique<QCryptographicHash>(QCryptographicHash::Sha256);
-    QNetworkRequest request(release_.package); request.setTransferTimeout(60000);
+    QNetworkRequest request(useApi ? FreshAssetUrl(release_.packageApi) : release_.package); request.setTransferTimeout(60000);
     request.setRawHeader("User-Agent", "7ZipContext/" + currentVersion_.toLatin1());
+    request.setRawHeader("Accept", "application/octet-stream");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
     auto* reply = network_->get(request); reply_ = reply; configureReply(reply);
-    const auto consume = [this, reply] {
-        if (reply_ != reply || !file_) return;
+    const auto retryOrFail = [this, useApi](const QString& error) {
+        if (useApi || release_.packageApi.isEmpty()) { fail(error); return; }
+        discardTransfer();
+        startPackageDownload(true);
+        if (state_ == State::Downloading) setState(State::Downloading, error + QStringLiteral("，正在通过 GitHub 备用入口重新下载…"));
+    };
+    const auto consume = [this, reply, retryOrFail] {
+        if (reply_ != reply || !file_ || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) return;
+        if (!reply->bytesAvailable()) return;
         const auto bytes = reply->readAll(); received_ += bytes.size();
-        if (received_ > release_.size || file_->write(bytes) != bytes.size()) { fail(QStringLiteral("更新包大小异常或写入失败")); return; }
+        if (received_ > release_.size) { retryOrFail(QStringLiteral("更新包超过发布大小（%1 / %2 字节）").arg(received_).arg(release_.size)); return; }
+        if (file_->write(bytes) != bytes.size()) { fail(QStringLiteral("无法写入更新包：%1").arg(file_->errorString())); return; }
         hash_->addData(bytes); status_ = QStringLiteral("正在下载更新 · %1%").arg(release_.size ? received_ * 100 / release_.size : 0); emit changed();
     };
     connect(reply, &QIODevice::readyRead, this, consume);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, consume] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, consume, retryOrFail] {
         consume();
         if (reply_ != reply || !file_) return;
-        if (reply->error() != QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200 ||
-            received_ != release_.size || hash_->result().toHex() != checksum_) { fail(QStringLiteral("更新包未完整下载或 SHA-256 校验失败，请重新下载")); return; }
+        const auto error = TransferError(reply);
+        if (!error.isEmpty()) { retryOrFail(QStringLiteral("更新包下载失败（%1 / %2 字节）：%3").arg(received_).arg(release_.size).arg(error)); return; }
+        if (received_ != release_.size) { retryOrFail(QStringLiteral("更新包下载不完整（%1 / %2 字节）").arg(received_).arg(release_.size)); return; }
+        if (hash_->result().toHex() != checksum_) { retryOrFail(QStringLiteral("更新包与发布清单的 SHA-256 不一致")); return; }
         if (!file_->commit()) { fail(QStringLiteral("无法保存已校验的更新包")); return; }
         packagePath_ = file_->fileName(); file_.reset(); hash_.reset(); reply_ = nullptr; reply->deleteLater();
         setState(State::Ready, QStringLiteral("版本 %1 已下载并通过校验，可以安装").arg(release_.version));
@@ -187,8 +225,7 @@ void UpdateManager::startPackageDownload() {
 }
 void UpdateManager::cancel() {
     if (state_ != State::Checking && state_ != State::Downloading) return;
-    if (reply_) { auto* reply = reply_.data(); reply_ = nullptr; reply->disconnect(this); reply->abort(); reply->deleteLater(); }
-    if (file_) { file_->cancelWriting(); file_.reset(); } hash_.reset();
+    discardTransfer();
     setState(release_.package.isEmpty() ? State::Idle : State::Available, QStringLiteral("已取消更新下载"));
 }
 void UpdateManager::stopInstallationMonitor() {

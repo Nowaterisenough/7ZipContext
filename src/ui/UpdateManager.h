@@ -12,14 +12,14 @@
 
 struct UpdateRelease {
     QString version, filename, notes;
-    QUrl page, package, checksums;
+    QUrl page, package, checksums, packageApi, checksumsApi;
     qint64 size = 0;
 };
 
 class UpdateManager final : public QObject {
     Q_OBJECT
 public:
-    enum class State { Idle, Checking, Available, Downloading, Ready, Installing, Error };
+    enum class State { Idle, Checking, Available, Downloading, Ready, Installing, Error, DownloadFailed };
     explicit UpdateManager(QObject* parent = nullptr, QNetworkAccessManager* network = nullptr,
                            QString currentVersion = {}, QString repository = {}, QString applicationDirectory = {},
                            QString cacheDirectory = {}, QString mode = {});
@@ -45,8 +45,9 @@ signals:
 private:
     void setState(State state, const QString& status);
     void fail(const QString& message);
-    void fetch(const QUrl& url, qint64 limit, std::function<void(const QByteArray&)> finished);
-    void startPackageDownload();
+    void fetch(const QUrl& url, qint64 limit, std::function<void(const QByteArray&)> finished, const QUrl& fallback = {});
+    void startPackageDownload(bool useApi = false);
+    void discardTransfer();
     void configureReply(class QNetworkReply* reply);
     void pollInstallation();
     void stopInstallationMonitor();

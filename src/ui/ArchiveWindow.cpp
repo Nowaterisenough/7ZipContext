@@ -928,8 +928,10 @@ void ArchiveWindow::syncUpdates() {
     auto& update = controller_.updates();
     updateStatus_->setText(update.status()); updateNotes_->setText(update.release().notes); updateNotes_->setVisible(!update.release().notes.isEmpty());
     checkUpdate_->setEnabled(!update.busy());
-    checkUpdate_->setVisible(update.state() == UpdateManager::State::Idle || update.state() == UpdateManager::State::Error);
-    downloadUpdate_->setVisible(update.state() == UpdateManager::State::Available);
+    const bool retry = update.state() == UpdateManager::State::DownloadFailed;
+    checkUpdate_->setVisible(update.state() == UpdateManager::State::Idle || update.state() == UpdateManager::State::Error || retry);
+    downloadUpdate_->setText(retry ? QStringLiteral("重新下载") : QStringLiteral("下载更新"));
+    downloadUpdate_->setVisible(update.state() == UpdateManager::State::Available || retry);
     installUpdate_->setVisible(update.state() == UpdateManager::State::Ready);
     installUpdate_->setEnabled(!controller_.busy());
     installUpdate_->setToolTip(controller_.busy() ? QStringLiteral("当前任务结束后可以安装更新") : QStringLiteral("安装时关闭程序，完成后重新启动"));

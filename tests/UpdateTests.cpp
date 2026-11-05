@@ -21,7 +21,16 @@ QByteArray Release(qint64 size = 7) {
         {"assets", QJsonArray{QJsonObject{{"name", Filename}, {"size", size}, {"browser_download_url", base + Filename}},
             QJsonObject{{"name", "SHA256SUMS.txt"}, {"browser_download_url", base + "SHA256SUMS.txt"}}}}}).toJson();
 }
-struct Response { QByteArray body; int status = 200; bool finalOnly = false; QUrl redirect; int delay = 0; };
+QByteArray ReleaseWithAssetIds() {
+    auto release = QJsonDocument::fromJson(Release()).object();
+    auto assets = release["assets"].toArray();
+    for (int i = 0; i < assets.size(); ++i) {
+        auto asset = assets[i].toObject(); asset["id"] = 123 + i;
+        asset["url"] = "https://example.invalid/untrusted"; assets[i] = asset;
+    }
+    release["assets"] = assets; return QJsonDocument(release).toJson();
+}
+struct Response { QByteArray body; int status = 200; bool finalOnly = false; QUrl redirect; int delay = 0; QNetworkReply::NetworkError error = QNetworkReply::NoError; };
 class Reply : public QNetworkReply {
 public:
     Reply(const QNetworkRequest& request, Response response, QObject* parent) : QNetworkReply(parent) {
@@ -32,6 +41,7 @@ public:
             if (!response.redirect.isEmpty()) emit redirected(response.redirect);
             if (isFinished()) return;
             data_ = response.body;
+            if (response.error != NoError) setError(response.error, "connection interrupted");
             if (!response.finalOnly) emit readyRead();
             if (isFinished()) return;
             setFinished(true); emit finished();
@@ -52,9 +62,10 @@ class Network : public QNetworkAccessManager {
 public:
     QList<Response> responses;
     QList<QUrl> requests;
+    QList<QByteArray> accepts;
 protected:
     QNetworkReply* createRequest(Operation, const QNetworkRequest& request, QIODevice*) override {
-        requests.append(request.url());
+        requests.append(request.url()); accepts.append(request.rawHeader("Accept"));
         return new Reply(request, responses.isEmpty() ? Response{{}, 500} : responses.takeFirst(), this);
     }
 };
@@ -135,25 +146,61 @@ private slots:
         QString error; QVERIFY(!manager.install(error)); QVERIFY(!error.isEmpty()); // Incomplete installations cannot launch the helper.
     }
     void rejectsInvalidDownloads_data() {
-        QTest::addColumn<QByteArray>("payload"); QTest::addColumn<int>("status"); QTest::addColumn<QUrl>("redirect");
-        QTest::newRow("checksum") << QByteArray("damaged") << 200 << QUrl();
-        QTest::newRow("oversize") << QByteArray("packageextra") << 200 << QUrl();
-        QTest::newRow("short") << QByteArray("pack") << 200 << QUrl();
-        QTest::newRow("http-error") << QByteArray("package") << 503 << QUrl();
-        QTest::newRow("untrusted-redirect") << QByteArray("package") << 200 << QUrl("https://evil.example/update.zip");
-        QTest::newRow("downgrade-redirect") << QByteArray("package") << 200 << QUrl("http://github.com/update.zip");
+        QTest::addColumn<QByteArray>("payload"); QTest::addColumn<int>("status"); QTest::addColumn<QUrl>("redirect"); QTest::addColumn<QString>("reason");
+        QTest::newRow("checksum") << QByteArray("damaged") << 200 << QUrl() << QString("SHA-256");
+        QTest::newRow("oversize") << QByteArray("packageextra") << 200 << QUrl() << QStringLiteral("超过发布大小");
+        QTest::newRow("short") << QByteArray("pack") << 200 << QUrl() << QStringLiteral("4 / 7 字节");
+        QTest::newRow("http-error") << QByteArray("package") << 503 << QUrl() << QString("HTTP 503");
+        QTest::newRow("untrusted-redirect") << QByteArray("package") << 200 << QUrl("https://evil.example/update.zip") << QStringLiteral("跳转");
+        QTest::newRow("downgrade-redirect") << QByteArray("package") << 200 << QUrl("http://github.com/update.zip") << QStringLiteral("跳转");
     }
     void rejectsInvalidDownloads() {
-        QFETCH(QByteArray, payload); QFETCH(int, status); QFETCH(QUrl, redirect);
+        QFETCH(QByteArray, payload); QFETCH(int, status); QFETCH(QUrl, redirect); QFETCH(QString, reason);
         QTemporaryDir temp; Network network;
         const auto hash = QCryptographicHash::hash("package", QCryptographicHash::Sha256).toHex();
         network.responses = {{Release()}, {hash + "  " + Filename.toUtf8()}, {payload, status, false, redirect}};
         UpdateManager manager(nullptr, &network, "1.1.0", Repository, temp.path(), temp.path(), "portable");
         manager.check(); QTRY_COMPARE(manager.state(), UpdateManager::State::Available);
-        manager.download(); QTRY_COMPARE(manager.state(), UpdateManager::State::Error); QVERIFY(manager.packagePath().isEmpty());
+        manager.download(); QTRY_COMPARE(manager.state(), UpdateManager::State::DownloadFailed); QVERIFY(manager.packagePath().isEmpty());
+        QVERIFY2(manager.status().contains(reason), qPrintable(manager.status()));
         QDir directory(temp.path());
         for (const auto& child : directory.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             QVERIFY(QDir(directory.filePath(child)).entryList(QDir::Files).isEmpty());
+    }
+    void retriesPackageViaOfficialAsset_data() {
+        QTest::addColumn<QByteArray>("body"); QTest::addColumn<int>("status"); QTest::addColumn<bool>("interrupt");
+        QTest::newRow("interrupted-stream") << QByteArray("pack") << 200 << true;
+        QTest::newRow("short-response") << QByteArray("pac") << 200 << false;
+        QTest::newRow("expired-url") << QByteArray("expired") << 403 << false;
+        QTest::newRow("wrong-bytes") << QByteArray("damaged") << 200 << false;
+        QTest::newRow("oversize") << QByteArray("packagegarbage") << 200 << false;
+    }
+    void retriesPackageViaOfficialAsset() {
+        QFETCH(QByteArray, body); QFETCH(int, status); QFETCH(bool, interrupt);
+        QTemporaryDir temp; Network network;
+        const auto hash = QCryptographicHash::hash("package", QCryptographicHash::Sha256).toHex();
+        network.responses = {{ReleaseWithAssetIds()}, {hash + "  " + Filename.toUtf8()},
+            {body, status, false, {}, 0, interrupt ? QNetworkReply::RemoteHostClosedError : QNetworkReply::NoError}, {"package"}};
+        UpdateManager manager(nullptr, &network, "1.1.0", Repository, temp.path(), temp.path(), "portable");
+        manager.check(); QTRY_COMPARE(manager.state(), UpdateManager::State::Available);
+        manager.download(); QTRY_COMPARE(manager.state(), UpdateManager::State::Ready);
+        QCOMPARE(network.requests.size(), 4); QCOMPARE(network.requests.last().adjusted(QUrl::RemoveQuery), QUrl("https://api.github.com/repos/example/archive/releases/assets/123"));
+        QCOMPARE(network.accepts.last(), QByteArray("application/octet-stream")); QCOMPARE(manager.received(), 7);
+        QFile package(manager.packagePath()); QVERIFY(package.open(QIODevice::ReadOnly)); QCOMPARE(package.readAll(), QByteArray("package"));
+    }
+    void failedFallbackCanRetryWithoutRecheckingRelease() {
+        QTemporaryDir temp; Network network;
+        const auto sums = QCryptographicHash::hash("package", QCryptographicHash::Sha256).toHex() + "  " + Filename.toUtf8();
+        network.responses = {{ReleaseWithAssetIds()}, {{}, 503}, {sums}, {{}, 403}, {"damaged"}, {sums}, {"package"}};
+        UpdateManager manager(nullptr, &network, "1.1.0", Repository, temp.path(), temp.path(), "portable");
+        manager.check(); QTRY_COMPARE(manager.state(), UpdateManager::State::Available);
+        manager.download(); QTRY_COMPARE(manager.state(), UpdateManager::State::DownloadFailed);
+        QCOMPARE(network.requests.size(), 5); QCOMPARE(network.requests[2].path(), QString("/repos/example/archive/releases/assets/124"));
+        QVERIFY(manager.status().contains("SHA-256")); QVERIFY(manager.packagePath().isEmpty());
+        for (const auto& dir : QDir(temp.path()).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+            QVERIFY(QDir(temp.filePath(dir)).entryList(QDir::Files | QDir::Hidden).isEmpty());
+        QString error; QVERIFY(!manager.install(error));
+        manager.download(); QTRY_COMPARE(manager.state(), UpdateManager::State::Ready); QCOMPARE(network.requests.size(), 7);
     }
     void cancelsAndCanRetry() {
         QTemporaryDir temp; Network network;
@@ -166,6 +213,16 @@ private slots:
         manager.download(); QTRY_COMPARE(network.requests.size(), 4); manager.cancel();
         QCOMPARE(manager.state(), UpdateManager::State::Available); QVERIFY(manager.packagePath().isEmpty());
         QTest::qWait(220); QCOMPARE(manager.state(), UpdateManager::State::Available);
+    }
+    void cancellingFallbackDoesNotStartAnotherDownload() {
+        QTemporaryDir temp; Network network;
+        const auto sums = QCryptographicHash::hash("package", QCryptographicHash::Sha256).toHex() + "  " + Filename.toUtf8();
+        network.responses = {{ReleaseWithAssetIds()}, {sums}, {"partial", 502}, {"package", 200, false, {}, 200}};
+        UpdateManager manager(nullptr, &network, "1.1.0", Repository, temp.path(), temp.path(), "portable");
+        manager.check(); QTRY_COMPARE(manager.state(), UpdateManager::State::Available);
+        manager.download(); QTRY_COMPARE(network.requests.size(), 4);
+        manager.cancel(); QTest::qWait(220); QCOMPARE(manager.state(), UpdateManager::State::Available);
+        QCOMPARE(network.requests.size(), 4); QVERIFY(manager.packagePath().isEmpty());
     }
     void failedInstallRestoresRetryControls_data() {
         QTest::addColumn<QByteArray>("result");
