@@ -365,7 +365,7 @@ bool ArchiveController::start(Operation operation, int selected) {
                     jobCount_ = static_cast<unsigned>(jobs.size() - attached + media.size());
                 };
                 auto attachParts = [&](const ArchivePlan& combined, size_t index, const QString& output) {
-                    if (!combined.error.empty() || combined.volumeAliases.empty()) return;
+                    if (!combined.error.empty() || combined.format != L"zip" || combined.volumeAliases.empty()) return;
                     for (size_t part = 0; part < plans.size(); ++part) {
                         if (part == index) continue;
                         const bool attached = std::any_of(combined.volumes.begin(), combined.volumes.end(), [&](const auto& path) {

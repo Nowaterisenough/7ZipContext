@@ -59,7 +59,6 @@ class COpenCallback final : public IArchiveOpenCallback, public IArchiveOpenVolu
     std::wstring secret;
     ProgressCallback progress;
     std::vector<std::wstring> volumes;
-    std::wstring volumeExtension;
     std::wstring volumeName;
     std::vector<std::pair<std::wstring,std::wstring>> volumeAliases;
     UInt64 total = 0;
@@ -67,9 +66,9 @@ public:
     bool passwordRequested = false;
     bool missingVolume = false;
     COpenCallback(const std::wstring& file, const std::wstring& password, ProgressCallback callback,
-                  const std::vector<std::wstring>& files, const std::wstring& extension, const std::wstring& name,
+                  const std::vector<std::wstring>& files, const std::wstring& name,
                   const std::vector<std::pair<std::wstring,std::wstring>>& aliases)
-        : path(file), secret(password), progress(std::move(callback)), volumes(files), volumeExtension(extension), volumeName(name), volumeAliases(aliases) {}
+        : path(file), secret(password), progress(std::move(callback)), volumes(files), volumeName(name), volumeAliases(aliases) {}
     STDMETHOD(QueryInterface)(REFIID iid, void** out) noexcept {
         *out = nullptr;
         if (iid == IID_IUnknown || iid == IID_IArchiveOpenCallback) *out = static_cast<IArchiveOpenCallback*>(this);
@@ -91,7 +90,6 @@ public:
         PropVariantInit(value);
         if (id == kpidName) {
             auto name = path.filename();
-            if (!volumeExtension.empty()) name.replace_extension(volumeExtension);
             if (!volumeName.empty()) name = volumeName;
             value->vt = VT_BSTR; value->bstrVal = SysAllocString(name.c_str());
         }
@@ -107,14 +105,15 @@ public:
         std::filesystem::path relative(name);
         if (relative.has_parent_path() || relative.is_absolute()) return S_FALSE;
         auto resolved = path.parent_path() / relative;
-        for (const auto& volume : volumes) {
-            if (_wcsicmp(std::filesystem::path(volume).filename().c_str(), name) == 0) { resolved = volume; break; }
-            if (!volumeExtension.empty()) {
-                auto alias = std::filesystem::path(volume).filename(); alias.replace_extension(volumeExtension);
-                if (_wcsicmp(alias.c_str(), name) == 0) { resolved = volume; break; }
+        if (!volumeAliases.empty()) {
+            const auto alias = std::find_if(volumeAliases.begin(), volumeAliases.end(), [&](const auto& entry) { return _wcsicmp(entry.first.c_str(), name) == 0; });
+            if (alias == volumeAliases.end()) { missingVolume = true; return S_FALSE; }
+            resolved = alias->second;
+        } else {
+            for (const auto& volume : volumes) {
+                if (_wcsicmp(std::filesystem::path(volume).filename().c_str(), name) == 0) { resolved = volume; break; }
             }
         }
-        for (const auto& alias : volumeAliases) if (_wcsicmp(alias.first.c_str(), name) == 0) { resolved = alias.second; break; }
         auto stream = new CFullInFileStream;
         stream->AddRef();
         if (!stream->Open(resolved.c_str())) {

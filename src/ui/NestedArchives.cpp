@@ -15,7 +15,7 @@ QString VolumeGroup(const QString& name) {
     static const QRegularExpression zip("^(.+)\\.(?:zip|z[0-9]{2,3})$");
     for (const auto& entry : {std::pair{&numeric, "numeric:"}, {&part, "part:"}, {&rar, "rar:"}, {&zip, "zip:"}}) {
         const auto match = entry.first->match(name);
-        if (match.hasMatch()) return QString::fromLatin1(entry.second) + match.captured(1) + (entry.first == &part ? match.captured(2) : QString{});
+        if (match.hasMatch()) return QString::fromLatin1(entry.second) + match.captured(1);
     }
     return {};
 }
@@ -78,6 +78,20 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
             }
             continue;
         }
+        const auto inspectBundle = [&](const std::vector<std::wstring>& bundle) {
+            auto plan = InspectArchiveFiles(bundle.front(), bundle);
+            if (plan.format == L"zip" && !plan.concatenated) {
+                auto native = InspectArchiveFiles(plan.firstVolume, context);
+                if (!native.volumeName.empty()) { native.input = plan.input; plan = std::move(native); }
+            }
+            result.archives.push_back(std::move(plan));
+        };
+        if (group.key().startsWith("part:")) {
+            std::vector<std::wstring> paths;
+            for (const auto& path : group.value()) paths.push_back(path.toStdWString());
+            for (const auto& bundle : GroupNamedArchiveParts(paths)) inspectBundle(bundle);
+            continue;
+        }
         bool duplicate = false; QSet<QString> names;
         for (const auto& path : group.value()) {
             const auto name = QFileInfo(path).fileName().toLower();
@@ -87,18 +101,11 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
         // Identical part names in separate bundles must never be combined.
         QMap<QString, std::vector<std::wstring>> bundles;
         for (const auto& path : group.value()) bundles[duplicate ? QFileInfo(path).absolutePath().toCaseFolded() : QString{}].push_back(path.toStdWString());
-        for (const auto& bundle : bundles) {
-            auto plan = InspectArchiveFiles(bundle.front(), bundle);
-            if (plan.format == L"zip" && !plan.concatenated) {
-                auto native = InspectArchiveFiles(plan.firstVolume, context);
-                if (!native.volumeName.empty()) { native.input = plan.input; plan = std::move(native); }
-            }
-            result.archives.push_back(std::move(plan));
-        }
+        for (const auto& bundle : bundles) inspectBundle(bundle);
     }
     QSet<QString> attached;
     auto key = [](const QString& path) { return QFileInfo(path).absoluteFilePath().toCaseFolded(); };
-    for (const auto& plan : result.archives) if (plan.error.empty() && !plan.volumeAliases.empty()) {
+    for (const auto& plan : result.archives) if (plan.error.empty() && plan.format == L"zip" && !plan.volumeAliases.empty()) {
         for (const auto& part : plan.volumes) if (part != plan.firstVolume) attached.insert(key(QString::fromStdWString(part)));
     }
     std::erase_if(result.archives, [&](const auto& plan) { return attached.contains(key(QString::fromStdWString(plan.input))); });

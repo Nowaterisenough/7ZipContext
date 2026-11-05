@@ -326,17 +326,21 @@ private slots:
     }
     void namedPartsWithDisguisedExtensions_data() {
         QTest::addColumn<QString>("format");
-        QTest::newRow("7z") << QString("7z");
-        QTest::newRow("zip") << QString("zip");
+        QTest::addColumn<bool>("mixed");
+        QTest::newRow("7z") << QString("7z") << false;
+        QTest::newRow("zip") << QString("zip") << false;
+        QTest::newRow("7z-mixed-suffix") << QString("7z") << true;
+        QTest::newRow("zip-mixed-suffix") << QString("zip") << true;
     }
     void namedPartsWithDisguisedExtensions() {
-        QFETCH(QString, format); QTemporaryDir temp;
+        QFETCH(QString, format); QFETCH(bool, mixed); QTemporaryDir temp;
         const auto source = temp.filePath("clip.mp4"); const QByteArray payload(50000, 'v'); QVERIFY(Write(source, payload));
         QVERIFY(Pack({source}, temp.filePath("original." + format), "named-pass", true));
         const auto parts = QDir(temp.path()).entryList({"original." + format + ".*"}, QDir::Files, QDir::Name);
         QVERIFY(parts.size() > 2); QStringList paths;
         for (int i = 0; i < parts.size(); ++i) {
-            const auto path = temp.filePath(QString("renamed.part%1.apk").arg(i + 1, 3, 10, QChar('0')));
+            const auto suffix = mixed && i > 0 ? QString(".mask%1").arg(i) : QString(".apk");
+            const auto path = temp.filePath(QString("renamed.part%1").arg(i + 1, 3, 10, QChar('0')) + suffix);
             QVERIFY(QFile::copy(temp.filePath(parts[i]), path)); paths.append(path);
         }
         const auto plan = InspectArchive(paths.last().toStdWString());
@@ -359,6 +363,89 @@ private slots:
         QVERIFY(QFile::copy(paths.first(), temp.filePath("renamed.part01.apk")));
         QVERIFY(!InspectArchive(paths.last().toStdWString()).error.empty());
     }
+    void mixedRarVolumes_data() {
+        QTest::addColumn<QString>("intake");
+        for (const auto* mode : {"first", "later", "both", "directory", "nested"}) QTest::newRow(mode) << QString::fromLatin1(mode);
+    }
+    void mixedRarVolumes() {
+        QFETCH(QString, intake); QTemporaryDir temp;
+        const auto folder = temp.filePath("drop");
+        const auto first = folder + QStringLiteral("/样本.part01.rar");
+        const auto last = folder + QStringLiteral("/样本.part2.r删a删删删r");
+        const auto original1 = Read(QFINDTESTDATA("fixtures/rar/sample.part1.rar"));
+        const auto original2 = Read(QFINDTESTDATA("fixtures/rar/sample.part2.rar"));
+        QVERIFY(!original1.isEmpty() && !original2.isEmpty());
+        QVERIFY(Write(first, original1)); QVERIFY(Write(last, original2));
+        QStringList inputs;
+        if (intake == "nested") {
+            // The wrapper is a complete 7z with a misleading media extension.
+            const auto wrapper = temp.filePath("wrapper.mp4"); QVERIFY(Pack({folder}, wrapper)); inputs << wrapper;
+        } else if (intake == "both") inputs << last << first;
+        else inputs << (intake == "first" ? first : intake == "later" ? last : folder);
+        ArchiveController controller(nullptr, temp.filePath("passwords.dat")); controller.organizeMedia = true;
+        controller.extractDestination = temp.filePath("out"); controller.addPaths(inputs, false);
+        QCOMPARE(controller.archives.size(), size_t(1));
+        if (intake != "nested") {
+            const auto& plan = controller.archives.front(); QVERIFY(plan.error.empty()); QCOMPARE(plan.volumes.size(), size_t(2));
+            QCOMPARE(QFileInfo(QString::fromStdWString(plan.firstVolume)), QFileInfo(first));
+            QCOMPARE(QString::fromStdWString(plan.volumeAliases.back().first), QStringLiteral("样本.part02.rar"));
+        }
+        QVERIFY(!QFileInfo::exists(controller.extractDestination));
+        QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+        QCOMPARE(controller.tasks.size(), intake == "nested" ? 2 : 1);
+        for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
+        QCOMPARE(controller.videoFiles.size(), 1);
+        QCOMPARE(Read(controller.videoFiles.first()), QByteArray("0123456789abcdef").repeated(384));
+        QCOMPARE(controller.cleanedIntermediateFiles, intake == "nested" ? 2 : 0);
+        QCOMPARE(Read(first), original1); QCOMPARE(Read(last), original2);
+    }
+    void mixedRarVolumesDoNotGuessDuplicateOrMissingParts() {
+        QTemporaryDir temp;
+        const auto first = temp.filePath("a/clip.part1");
+        const auto last = temp.filePath("a/clip.part02.mp4");
+        QVERIFY(Write(last, Read(QFINDTESTDATA("fixtures/rar/sample.part2.rar"))));
+        QVERIFY(InspectArchive(last.toStdWString()).error.find(L"缺少首卷") != std::wstring::npos);
+        QVERIFY(Write(first, Read(QFINDTESTDATA("fixtures/rar/sample.part1.rar"))));
+        const auto good = InspectArchive(last.toStdWString()); QVERIFY(good.error.empty());
+        SevenZipCore core; QVERIFY(core.OpenArchive(good)); QVERIFY(core.TestArchive()); core.CloseArchive();
+        const auto other = temp.filePath("a/clip.part2.pdf"); QVERIFY(QFile::copy(last, other));
+        const auto ambiguous = DiscoverInputs({first}); QCOMPARE(ambiguous.archives.size(), size_t(1));
+        QVERIFY(ambiguous.archives.front().error.find(L"重复编号") != std::wstring::npos);
+        QVERIFY(QFile::remove(other));
+        const auto copy1 = temp.filePath("b/clip.part1.bin"), copy2 = temp.filePath("b/clip.part2.rar");
+        QVERIFY(Write(copy1, Read(first))); QVERIFY(Write(copy2, Read(last)));
+        const auto separate = DiscoverInputs({temp.path()}); QCOMPARE(separate.archives.size(), size_t(2));
+        for (const auto& plan : separate.archives) {
+            QVERIFY(plan.error.empty()); QCOMPARE(plan.volumes.size(), size_t(2));
+            QCOMPARE(QFileInfo(QString::fromStdWString(plan.volumes[0])).absolutePath(), QFileInfo(QString::fromStdWString(plan.volumes[1])).absolutePath());
+        }
+        const auto unused = temp.filePath("a/clip.part3.jpg"); QVERIFY(QFile::copy(last, unused));
+        QVERIFY(!core.OpenArchive(InspectArchive(first.toStdWString()))); QVERIFY(core.LastError().find(L"全部候选分卷") != std::wstring::npos);
+    }
+    void complete7zDoesNotConsumeUnrelatedTrailingPart() {
+        QTemporaryDir temp; const auto video = temp.filePath("clip.mp4"); QVERIFY(Write(video, "video"));
+        const auto first = temp.filePath("input/test.part1.bin"), extra = temp.filePath("input/test.part2.jpg");
+        QVERIFY(Pack({video}, first)); QVERIFY(Write(extra, QByteArray::fromHex("ffd8ffe0") + "separate image"));
+        const auto discovered = DiscoverInputs({first}); QCOMPARE(discovered.archives.size(), size_t(1));
+        SevenZipCore core; QVERIFY(!core.OpenArchive(discovered.archives.front()));
+        QVERIFY(core.LastError().find(L"全部候选分卷") != std::wstring::npos);
+    }
+    void distinctSameStemSetsAreNotAddedByDraggingOnePart() {
+        QTemporaryDir temp; const auto folder = temp.filePath("inputs");
+        for (const auto& suffix : {QString(".doc"), QString(".bin")}) {
+            const auto clip = temp.filePath("clip.mp4"), pack = temp.filePath("whole" + suffix);
+            QVERIFY(Write(clip, suffix.toUtf8())); QVERIFY(Pack({clip}, pack));
+            const auto bytes = Read(pack); const auto cut = bytes.size() / 2;
+            QVERIFY(Write(folder + "/same.part1" + suffix, bytes.first(cut)));
+            QVERIFY(Write(folder + "/same.part2" + suffix, bytes.mid(cut)));
+        }
+        const auto dropped = DiscoverInputs({folder + "/same.part2.bin"});
+        QCOMPARE(dropped.files.size(), 2); QCOMPARE(dropped.archives.size(), size_t(1));
+        const auto folderScan = DiscoverInputs({folder}); QCOMPARE(folderScan.archives.size(), size_t(2));
+        for (const auto& plan : folderScan.archives) {
+            SevenZipCore core; QVERIFY(core.OpenArchive(plan)); QVERIFY(core.TestArchive());
+        }
+    }
     void optionalDisguisedRarVolumesAcrossDirectories() {
         const auto fixtures = QDir::current().absoluteFilePath("rar-fixtures");
         const auto parts = QDir(fixtures).entryList({"sample.part*.rar"}, QDir::Files, QDir::Name);
@@ -371,7 +458,7 @@ private slots:
         }
         const auto nested = FindNestedArchives(paths); QCOMPARE(nested.archives.size(), size_t(1));
         const auto& plan = nested.archives.front(); QVERIFY(plan.error.empty()); QVERIFY(!plan.concatenated);
-        QCOMPARE(plan.volumeExtension, std::wstring(L".rar"));
+        QCOMPARE(plan.volumeName, std::wstring(L"renamed.part001.rar"));
         SevenZipCore core;
         QVERIFY2(core.OpenArchive(plan, L"test-secret"), qPrintable(QString::fromStdWString(core.LastError())));
         QVERIFY(core.TestArchive(L"test-secret"));

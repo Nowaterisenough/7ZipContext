@@ -61,15 +61,23 @@ DiscoveredInputs DiscoverInputs(const QStringList& paths, ProgressCallback progr
         const QFileInfo info(result.files[index]); const auto family = ArchiveVolumeGroup(info.fileName());
         if (family.isEmpty()) continue;
         const auto key = Key(info.absolutePath()) + '|' + family;
-        if (siblingGroups.contains(key)) continue; siblingGroups.insert(key);
+        if (siblingGroups.contains(key)) continue;
         const auto siblings = info.dir().entryInfoList(QDir::Files | QDir::Hidden | QDir::NoSymLinks);
-        for (const auto& sibling : siblings) if (ArchiveVolumeGroup(sibling.fileName()) == family) addFile(sibling.absoluteFilePath());
+        std::vector<std::wstring> candidates;
+        for (const auto& sibling : siblings) if (ArchiveVolumeGroup(sibling.fileName()) == family) candidates.push_back(sibling.absoluteFilePath().toStdWString());
+        if (family.startsWith("part:")) {
+            for (const auto& group : GroupNamedArchiveParts(candidates)) {
+                if (std::none_of(group.begin(), group.end(), [&](const auto& p) { return seenFiles.contains(Key(QString::fromStdWString(p))); })) continue;
+                for (const auto& p : group) addFile(QString::fromStdWString(p));
+            }
+        } else for (const auto& p : candidates) addFile(QString::fromStdWString(p));
+        siblingGroups.insert(key);
     }
     auto scan = FindNestedArchives(result.files, progress);
     if (scan.cancelled) { result.cancelled = true; return result; }
     result.archives.insert(result.archives.end(), scan.archives.begin(), scan.archives.end());
     QSet<QString> attached;
-    for (const auto& plan : result.archives) if (plan.error.empty() && !plan.volumeAliases.empty()) {
+    for (const auto& plan : result.archives) if (plan.error.empty() && plan.format == L"zip" && !plan.volumeAliases.empty()) {
         for (const auto& part : plan.volumes) if (part != plan.firstVolume) attached.insert(Key(QString::fromStdWString(part)));
     }
     std::erase_if(result.archives, [&](const auto& plan) { return attached.contains(Key(QString::fromStdWString(plan.input))); });

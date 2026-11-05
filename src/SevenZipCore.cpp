@@ -909,7 +909,7 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
         auto archive = CreateInArchive(id);
         if (!archive) continue;
         m_inStream->Seek(0, STREAM_SEEK_SET, nullptr);
-        auto callback = new COpenCallback(plan.firstVolume, password, progress, plan.volumes, plan.volumeExtension, plan.volumeName, plan.volumeAliases);
+        auto callback = new COpenCallback(plan.firstVolume, password, progress, plan.volumes, plan.volumeName, plan.volumeAliases);
         UInt64 maxCheck = 1 << 22;
         HRESULT result = archive->Open(m_inStream, &maxCheck, callback);
         requestedPassword = requestedPassword || callback->passwordRequested;
@@ -935,6 +935,22 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
     PropVariantClear(&diagnostics);
     if (incomplete) {
         CloseArchive(); m_error = L"压缩包不完整：存在缺卷或文件头损坏"; return false;
+    }
+    // A complete archive can open successfully while ignoring unrelated trailing "parts".
+    // Never report those files as consumed (nested cleanup would then remove them).
+    if (plan.volumes.size() > 1) {
+        bool unused = false;
+        if (plan.format == L"rar" || plan.format == L"rar5") {
+            m_archive->GetArchiveProperty(kpidNumVolumes, &diagnostics);
+            unused = diagnostics.vt == VT_UI4 && diagnostics.ulVal != plan.volumes.size();
+        } else if (plan.concatenated && (plan.format == L"7z" || plan.format == L"zip")) {
+            m_archive->GetArchiveProperty(kpidPhySize, &diagnostics);
+            std::error_code ec;
+            const auto lastSize = std::filesystem::file_size(NativePath(plan.volumes.back()), ec);
+            unused = !ec && lastSize <= plan.size && diagnostics.vt == VT_UI8 && diagnostics.uhVal.QuadPart <= plan.size - lastSize;
+        }
+        PropVariantClear(&diagnostics);
+        if (unused) { CloseArchive(); m_error = L"压缩内容未使用全部候选分卷，请检查分卷是否属于同一压缩包"; return false; }
     }
     m_currentPath = plan.firstVolume;
     m_needsPassword = requestedPassword;

@@ -10,7 +10,6 @@ struct ArchivePlan {
     std::wstring format;
     std::wstring suggestedPath;
     std::wstring error;
-    std::wstring volumeExtension;
     std::wstring volumeName;
     std::vector<std::pair<std::wstring, std::wstring>> volumeAliases;
     std::vector<std::wstring> volumes;
@@ -24,6 +23,8 @@ struct ArchivePlan {
 
 ArchivePlan InspectArchive(const std::wstring& path);
 ArchivePlan InspectArchiveFiles(const std::wstring& path, const std::vector<std::wstring>& relatedFiles);
+// Partition partN candidates before choosing an entry volume, including across nested directories.
+std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<std::wstring>& paths);
 std::wstring DetectArchiveSignature(const std::wstring& path);
 bool CorrectArchiveName(ArchivePlan& plan, std::wstring& error);
 std::wstring ArchiveOutputName(const ArchivePlan& plan);

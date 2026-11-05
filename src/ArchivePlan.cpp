@@ -19,6 +19,28 @@ std::wstring Lower(std::wstring value) {
     return value;
 }
 
+struct NamedPart {
+    std::wstring prefix, digits, suffix;
+    unsigned index() const { return static_cast<unsigned>(std::stoul(digits)); }
+};
+bool ParsePart(const std::wstring& name, NamedPart& part) {
+    static const std::wregex pattern(L"(.+\\.part)([0-9]{1,6})(\\.[^.]+)?");
+    std::wsmatch match;
+    if (!std::regex_match(name, match, pattern)) return false;
+    part = {match[1].str(), match[2].str(), match[3].str()};
+    // A trailing .001 is a separate numeric volume family, even after a partN stem.
+    return !(part.suffix.size() >= 4 && part.suffix.size() <= 7 &&
+             std::all_of(part.suffix.begin() + 1, part.suffix.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }));
+}
+
+// Native RAR repeats its marker on every volume; a byte-split 7z/ZIP generally has only one header.
+int RarVersion(const unsigned char* data, size_t count) {
+    constexpr unsigned char marker[]{'R', 'a', 'r', '!', 0x1a, 0x07};
+    if (count < 7 || !std::equal(std::begin(marker), std::end(marker), data)) return 0;
+    if (data[6] == 0) return 4;
+    return count >= 8 && data[6] == 1 && data[7] == 0 ? 5 : 0;
+}
+
 struct ZipVolumeInfo { uint32_t lastDisk = 0; uint64_t directory = 0, directorySize = 0; };
 bool ZipEndPresent(const fs::path& path) {
     std::ifstream file(fs::path(NativePath(path.wstring())), std::ios::binary); file.seekg(0, std::ios::end);
@@ -196,8 +218,8 @@ std::wstring Signature(const fs::path& path, uint64_t* dataOffset = nullptr, uin
     if (match(0, {0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c})) return L"7z";
     if (match(0, {0x50, 0x4b, 0x03, 0x04}) || match(0, {0x50, 0x4b, 0x05, 0x06}) ||
         match(0, {0x50, 0x4b, 0x07, 0x08})) return L"zip";
-    if (match(0, {0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00})) return L"rar5";
-    if (match(0, {0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00})) return L"rar";
+    const auto rar = RarVersion(data.data(), static_cast<size_t>(n));
+    if (rar) return rar == 5 ? L"rar5" : L"rar";
     if (match(0, {0x1f, 0x8b})) return L"gz";
     if (match(0, {0x42, 0x5a, 0x68})) return L"bz2";
     if (match(0, {0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00})) return L"xz";
@@ -216,6 +238,49 @@ std::wstring Signature(const fs::path& path, uint64_t* dataOffset = nullptr, uin
 }
 }
 
+std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<std::wstring>& paths) {
+    struct Entry { NamedPart part; std::wstring path, directory; };
+    std::map<std::pair<std::wstring, int>, std::vector<Entry>> families;
+    for (const auto& path : paths) {
+        const auto file = fs::path(path).lexically_normal();
+        NamedPart part;
+        if (!ParsePart(Lower(file.filename().wstring()), part)) continue;
+        std::ifstream stream(fs::path(NativePath(path)), std::ios::binary);
+        std::array<unsigned char, 8> head{};
+        stream.read(reinterpret_cast<char*>(head.data()), head.size());
+        families[{part.prefix, RarVersion(head.data(), static_cast<size_t>(stream.gcount()))}].push_back(
+            {part, path, Lower(file.parent_path().wstring())});
+    }
+    std::vector<std::vector<std::wstring>> groups;
+    for (const auto& [family, entries] : families) {
+        std::map<unsigned, std::wstring> locations;
+        bool separateFolders = false;
+        for (const auto& e : entries) {
+            const auto [it, added] = locations.emplace(e.part.index(), e.directory);
+            if (!added && it->second != e.directory) separateFolders = true;
+        }
+        std::map<std::wstring, std::vector<const Entry*>> folders;
+        for (const auto& e : entries) folders[separateFolders ? e.directory : L""].push_back(&e);
+        for (const auto& [directory, bundle] : folders) {
+            // Independent same-stem sets with distinct first volumes retain their original suffixes.
+            std::set<std::wstring> firstSuffixes;
+            bool allowMixedSuffixes = family.second != 0;
+            for (const auto* e : bundle) if (e->part.index() == 1) {
+                firstSuffixes.insert(e->part.suffix);
+                if (!allowMixedSuffixes) {
+                    const auto signature = Signature(e->path);
+                    allowMixedSuffixes = signature == L"7z" || signature == L"zip";
+                }
+            }
+            const bool keepSuffix = !allowMixedSuffixes || firstSuffixes.size() > 1;
+            std::map<std::wstring, std::vector<std::wstring>> bySuffix;
+            for (const auto* e : bundle) bySuffix[keepSuffix ? e->part.suffix : L""].push_back(e->path);
+            for (auto& [suffix, files] : bySuffix) groups.push_back(std::move(files));
+        }
+    }
+    return groups;
+}
+
 static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vector<std::wstring>* relatedFiles = nullptr) {
     ArchivePlan plan;
     std::error_code ec;
@@ -230,7 +295,8 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
     if (ZipVolumeTail(absolute, nativeZip)) return NativeZipPlan(absolute, nativeZip, relatedFiles);
     const auto name = Lower(absolute.filename().wstring());
     std::wsmatch match;
-    std::wstring prefix, suffix;
+    std::wstring prefix;
+    NamedPart selectedPart;
     auto sibling = [&](const std::wstring& filename) -> fs::path {
         if (relatedFiles) {
             fs::path found;
@@ -249,8 +315,8 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
         prefix = match[1].str() + L".";
         kind = Kind::Numeric;
         plan.concatenated = true;
-    } else if (std::regex_match(name, match, std::wregex(L"(.+\\.part)([0-9]{1,6})(\\.[^.]+)?"))) {
-        prefix = match[1]; suffix = match[3]; kind = Kind::NamedPart;
+    } else if (ParsePart(name, selectedPart)) {
+        prefix = selectedPart.prefix; kind = Kind::NamedPart;
     } else if (std::regex_match(name, match, std::wregex(L"(.+)\\.r([0-9]{2,3})"))) {
         prefix = match[1].str() + L".r"; kind = Kind::RarOld; first = 0;
     } else if (std::regex_match(name, match, std::wregex(L"(.+)\\.z([0-9]{2,3})"))) {
@@ -274,14 +340,26 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
             if (listing.error != ERROR_SUCCESS) { plan.error = L"无法读取分卷所在目录"; return plan; }
             for (const auto& entry : listing.entries) if (!(entry.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) files.emplace_back(entry.path);
         }
+        if (kind == Kind::NamedPart) {
+            std::vector<std::wstring> candidates;
+            for (const auto& file : files) {
+                NamedPart part;
+                if (ParsePart(Lower(file.filename().wstring()), part) && part.prefix == prefix) candidates.push_back(file.wstring());
+            }
+            files.clear();
+            for (const auto& group : GroupNamedArchiveParts(candidates)) {
+                if (std::none_of(group.begin(), group.end(), [&](const auto& p) { return _wcsicmp(fs::path(p).lexically_normal().c_str(), absolute.c_str()) == 0; })) continue;
+                for (const auto& p : group) files.emplace_back(p);
+                break;
+            }
+        }
         for (const auto& file : files) {
             const auto other = Lower(file.filename().wstring());
-            if (other.size() <= prefix.size() + suffix.size() || other.substr(0, prefix.size()) != prefix ||
-                (!suffix.empty() && other.substr(other.size() - suffix.size()) != suffix)) continue;
-            const auto number = other.substr(prefix.size(), other.size() - prefix.size() - suffix.size());
+            if (!other.starts_with(prefix) || other.size() <= prefix.size()) continue;
+            const auto number = kind == Kind::NamedPart ? other.substr(prefix.size(), other.find(L'.', prefix.size()) - prefix.size()) : other.substr(prefix.size());
             if (number.size() > 6 || !std::all_of(number.begin(), number.end(), iswdigit)) continue;
             const auto index = static_cast<unsigned int>(std::stoul(number));
-            if (parts.count(index)) { plan.error = L"存在重复编号的分卷"; return plan; }
+            if (parts.count(index)) { plan.error = L"存在重复编号的分卷：第 " + std::to_wstring(index) + L" 卷"; return plan; }
             parts[index] = file;
         }
         if (ec) { plan.error = L"无法读取分卷所在目录"; return plan; }
@@ -324,7 +402,16 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
     if (kind == Kind::NamedPart) {
         const bool nativeRar = plan.format == L"rar" || plan.format == L"rar5";
         plan.concatenated = !nativeRar;
-        if (nativeRar && suffix != L".rar") plan.volumeExtension = L".rar";
+        if (nativeRar) {
+            NamedPart firstPart;
+            ParsePart(Lower(fs::path(plan.firstVolume).filename().wstring()), firstPart);
+            for (size_t i = 0; i < plan.volumes.size(); ++i) {
+                std::wostringstream alias;
+                alias << firstPart.prefix << std::setfill(L'0') << std::setw(static_cast<int>(firstPart.digits.size())) << i + 1 << L".rar";
+                plan.volumeAliases.emplace_back(alias.str(), plan.volumes[i]);
+            }
+            plan.volumeName = plan.volumeAliases.front().first;
+        }
     }
     if (!plan.split && plan.format == L"zip" && !ZipEndPresent(absolute)) plan.awaitingVolume = true;
     auto extension = L"." + (plan.format == L"rar5" ? L"rar" : plan.format);
