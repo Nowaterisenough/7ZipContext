@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include <utility>
@@ -20,6 +21,13 @@ struct ArchivePlan {
     bool needsRename = false;
     bool awaitingVolume = false, probePdf = false;
 };
+
+struct NumericArchivePart {
+    std::wstring base;
+    unsigned index;
+    bool masked;
+};
+std::optional<NumericArchivePart> ParseNumericArchivePart(const std::wstring& filename);
 
 ArchivePlan InspectArchive(const std::wstring& path);
 ArchivePlan InspectArchiveFiles(const std::wstring& path, const std::vector<std::wstring>& relatedFiles);

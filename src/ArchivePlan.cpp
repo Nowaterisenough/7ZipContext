@@ -238,6 +238,26 @@ std::wstring Signature(const fs::path& path, uint64_t* dataOffset = nullptr, uin
 }
 }
 
+std::optional<NumericArchivePart> ParseNumericArchivePart(const std::wstring& filename) {
+    const auto dot = filename.rfind(L'.');
+    if (dot == std::wstring::npos || dot == 0 || dot + 1 == filename.size()) return {};
+    const auto parseNumber = [](const std::wstring& text) -> std::optional<unsigned> {
+        if (text.size() < 3 || text.size() > 6 || text.find_first_not_of(L"0123456789") != std::wstring::npos) return {};
+        return static_cast<unsigned>(std::stoul(text));
+    };
+    if (const auto number = parseNumber(filename.substr(dot + 1))) return NumericArchivePart{filename.substr(0, dot), *number, false};
+
+    const auto numberDot = filename.rfind(L'.', dot - 1);
+    if (numberDot == std::wstring::npos) return {};
+    const auto number = parseNumber(filename.substr(numberDot + 1, dot - numberDot - 1));
+    if (!number) return {};
+    const auto base = filename.substr(0, numberDot);
+    // Only strip a disguise after an archive extension; chapter.001.pdf and photo.002.jpg are ordinary filenames.
+    static const std::set<std::wstring> formats{L".7z", L".zip", L".rar", L".tar", L".gz", L".tgz", L".bz2", L".tbz2", L".xz", L".cab", L".iso"};
+    if (!formats.contains(Lower(fs::path(base).extension().wstring()))) return {};
+    return NumericArchivePart{base, *number, true};
+}
+
 std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<std::wstring>& paths) {
     struct Entry { NamedPart part; std::wstring path, directory; };
     std::map<std::pair<std::wstring, int>, std::vector<Entry>> families;
@@ -311,8 +331,8 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
     };
     unsigned int first = 1;
     enum class Kind { None, Numeric, NamedPart, RarOld, Zip } kind = Kind::None;
-    if (std::regex_match(name, match, std::wregex(L"(.+)\\.([0-9]{3,6})"))) {
-        prefix = match[1].str() + L".";
+    if (const auto part = ParseNumericArchivePart(name)) {
+        prefix = part->base + L".";
         kind = Kind::Numeric;
         plan.concatenated = true;
     } else if (ParsePart(name, selectedPart)) {
@@ -356,9 +376,16 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
         for (const auto& file : files) {
             const auto other = Lower(file.filename().wstring());
             if (!other.starts_with(prefix) || other.size() <= prefix.size()) continue;
-            const auto number = kind == Kind::NamedPart ? other.substr(prefix.size(), other.find(L'.', prefix.size()) - prefix.size()) : other.substr(prefix.size());
-            if (number.size() > 6 || !std::all_of(number.begin(), number.end(), iswdigit)) continue;
-            const auto index = static_cast<unsigned int>(std::stoul(number));
+            unsigned index;
+            if (kind == Kind::Numeric) {
+                const auto part = ParseNumericArchivePart(other);
+                if (!part || part->base + L"." != prefix) continue;
+                index = part->index;
+            } else {
+                const auto number = kind == Kind::NamedPart ? other.substr(prefix.size(), other.find(L'.', prefix.size()) - prefix.size()) : other.substr(prefix.size());
+                if (number.size() > 6 || !std::all_of(number.begin(), number.end(), iswdigit)) continue;
+                index = static_cast<unsigned>(std::stoul(number));
+            }
             if (parts.count(index)) { plan.error = L"存在重复编号的分卷：第 " + std::to_wstring(index) + L" 卷"; return plan; }
             parts[index] = file;
         }
@@ -458,7 +485,7 @@ bool CorrectArchiveName(ArchivePlan& plan, std::wstring& error) {
 
 std::wstring ArchiveOutputName(const ArchivePlan& plan) {
     auto name = fs::path(plan.firstVolume).filename().wstring();
-    name = std::regex_replace(name, std::wregex(L"\\.[0-9]{3,6}$"), L"");
+    if (const auto part = ParseNumericArchivePart(name)) name = part->base;
     if (plan.split) name = std::regex_replace(name, std::wregex(L"\\.part[0-9]+(?:\\.[^.]+)?$", std::regex::icase),
                                             L"." + (plan.format == L"rar5" ? L"rar" : plan.format));
     auto stem = fs::path(name).stem().wstring();

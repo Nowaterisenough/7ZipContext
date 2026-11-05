@@ -82,7 +82,8 @@ int main(int argc, char** argv) {
             auto splitOut = root / (std::wstring(L"split-output-") + format);
             Check(core.Extract(splitOut.wstring()), "extract concatenated volumes");
             Check(Read(splitOut / source.filename()) == payload, "split roundtrip bytes match"); core.CloseArchive();
-            fs::rename(volume2, volume2 + L".missing");
+            // A renamed suffix is now a valid disguise; make the numbered volume genuinely absent.
+            fs::rename(volume2, root / (std::wstring(L"absent-middle-") + format));
             Check(!InspectArchive(split.wstring() + L".001").error.empty(), "missing middle volume detected");
             Check(!core.OpenArchive(split.wstring() + L".001"), "missing volume prevents extraction");
             auto folder = root / (std::wstring(L"nested-") + format);

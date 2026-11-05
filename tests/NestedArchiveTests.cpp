@@ -324,6 +324,65 @@ private slots:
             for (const auto& volume : plan.volumes) QCOMPARE(QFileInfo(QString::fromStdWString(volume)).absolutePath(), folder);
         }
     }
+    void maskedNumericVolumes_data() {
+        QTest::addColumn<QString>("intake"); QTest::addColumn<QString>("format"); QTest::addColumn<QString>("mask1"); QTest::addColumn<QString>("mask2");
+        QTest::newRow("first-pdf") << QString("first") << QString("7z") << QString(".pdf") << QString();
+        QTest::newRow("later-plain") << QString("last") << QString("7z") << QString(".pdf") << QString();
+        QTest::newRow("both-reversed") << QString("both") << QString("7z") << QString(".pdf") << QString();
+        QTest::newRow("directory-both-masked") << QString("folder") << QString("zip") << QString(".docx") << QString(".jpg");
+        QTest::newRow("later-masked") << QString("last") << QString("7z") << QString() << QString(".bin");
+        QTest::newRow("nested-cross-folder") << QString("nested") << QString("7z") << QString(".pdf") << QString(".mp4");
+    }
+    void maskedNumericVolumes() {
+        QFETCH(QString, intake); QFETCH(QString, format); QFETCH(QString, mask1); QFETCH(QString, mask2);
+        QTemporaryDir temp; const QByteArray video(40000, 'v'); QVERIFY(Write(temp.filePath("clip.mp4"), video));
+        const auto whole = temp.filePath("whole." + format); QVERIFY(Pack({temp.filePath("clip.mp4")}, whole));
+        const auto bytes = Read(whole); const auto cut = bytes.size() / 2; QVERIFY(cut > 32);
+        const auto folder = temp.filePath("drop"), base = QStringLiteral("课程Set.") + format;
+        const auto first = folder + '/' + base + ".001" + mask1;
+        const auto last = folder + (intake == "nested" ? "/side/" : "/") + base + ".002" + mask2;
+        QVERIFY(Write(first, bytes.first(cut))); QVERIFY(Write(last, bytes.mid(cut)));
+        QStringList inputs;
+        if (intake == "nested") {
+            const auto outer = temp.filePath("outer.7z"); QVERIFY(Pack({folder}, outer)); inputs << outer;
+        } else {
+            const auto direct = InspectArchive(last.toStdWString()); QVERIFY(direct.error.empty()); QVERIFY(direct.concatenated);
+            QCOMPARE(direct.volumes.size(), size_t(2)); QCOMPARE(QString::fromStdWString(ArchiveOutputName(direct)), QStringLiteral("课程Set"));
+            if (intake == "both") inputs << last << first;
+            else inputs << (intake == "folder" ? folder : intake == "last" ? last : first);
+        }
+        ArchiveController controller(nullptr, temp.filePath("passwords.dat")); controller.organizeMedia = true;
+        controller.extractDestination = temp.filePath("out"); controller.addPaths(inputs, false);
+        QCOMPARE(controller.archives.size(), size_t(1)); QVERIFY(!QFileInfo::exists(controller.extractDestination));
+        if (intake != "nested") QCOMPARE(controller.archives.front().volumes.size(), size_t(2));
+        QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+        QCOMPARE(controller.tasks.size(), intake == "nested" ? 2 : 1);
+        for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
+        QCOMPARE(controller.videoFiles.size(), 1); QCOMPARE(Read(controller.videoFiles.first()), video);
+        QCOMPARE(controller.cleanedIntermediateFiles, intake == "nested" ? 2 : 0);
+        QCOMPARE(Read(first), bytes.first(cut)); QCOMPARE(Read(last), bytes.mid(cut));
+    }
+    void maskedNumericConflictsAndOrdinaryDocuments() {
+        QTemporaryDir temp; const auto first = temp.filePath("a/book.7z.001.pdf"), last = temp.filePath("a/book.7z.002.img");
+        QVERIFY(Write(last, "continuation"));
+        const auto missing = DiscoverInputs({last}); QCOMPARE(missing.archives.size(), size_t(1));
+        QVERIFY(missing.archives.front().error.find(L"缺少首卷") != std::wstring::npos);
+        QVERIFY(Write(first, QByteArray::fromHex("377abcaf271c"))); QVERIFY(Write(temp.filePath("a/book.7z.003"), "third"));
+        QVERIFY(QFile::remove(last)); QVERIFY(InspectArchive(first.toStdWString()).error.find(L"缺少第 2 卷") != std::wstring::npos);
+        QVERIFY(Write(last, "continuation")); const auto duplicate = temp.filePath("a/book.7z.002"); QVERIFY(QFile::copy(last, duplicate));
+        const auto ambiguous = DiscoverInputs({first}); QCOMPARE(ambiguous.archives.size(), size_t(1));
+        QVERIFY(ambiguous.archives.front().error.find(L"重复编号") != std::wstring::npos);
+        QVERIFY(QFile::remove(duplicate));
+        QVERIFY(Write(temp.filePath("b/book.7z.001"), Read(first))); QVERIFY(Write(temp.filePath("b/book.7z.002.pdf"), Read(last)));
+        const auto bundles = DiscoverInputs({temp.path()}); QCOMPARE(bundles.archives.size(), size_t(2));
+        for (const auto& plan : bundles.archives) {
+            QVERIFY(plan.error.empty()); const QFileInfo entry(QString::fromStdWString(plan.firstVolume));
+            for (const auto& volume : plan.volumes) QCOMPARE(QFileInfo(QString::fromStdWString(volume)).absolutePath(), entry.absolutePath());
+        }
+        const auto ordinary = temp.filePath("ordinary");
+        QVERIFY(Write(ordinary + "/chapter.001.pdf", "%PDF-1.7")); QVERIFY(Write(ordinary + "/chapter.002.jpg", QByteArray::fromHex("ffd8ffe0")));
+        const auto docs = DiscoverInputs({ordinary}); QVERIFY(docs.archives.empty()); QCOMPARE(docs.ignored.size(), 1); QCOMPARE(docs.media.size(), 1);
+    }
     void namedPartsWithDisguisedExtensions_data() {
         QTest::addColumn<QString>("format");
         QTest::addColumn<bool>("mixed");

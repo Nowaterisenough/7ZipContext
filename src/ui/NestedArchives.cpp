@@ -8,12 +8,12 @@
 #include <algorithm>
 
 namespace {
-QString VolumeGroup(const QString& name) {
-    static const QRegularExpression numeric("^(.+)\\.([0-9]{3,6})$");
+QString VolumeGroup(const QString& name, const std::optional<NumericArchivePart>& numeric) {
+    if (numeric) return "numeric:" + QString::fromStdWString(numeric->base);
     static const QRegularExpression part("^(.+)\\.part[0-9]{1,6}(\\.[^.]+)?$");
     static const QRegularExpression rar("^(.+)\\.(?:rar|r[0-9]{2,3})$");
     static const QRegularExpression zip("^(.+)\\.(?:zip|z[0-9]{2,3})$");
-    for (const auto& entry : {std::pair{&numeric, "numeric:"}, {&part, "part:"}, {&rar, "rar:"}, {&zip, "zip:"}}) {
+    for (const auto& entry : {std::pair{&part, "part:"}, {&rar, "rar:"}, {&zip, "zip:"}}) {
         const auto match = entry.first->match(name);
         if (match.hasMatch()) return QString::fromLatin1(entry.second) + match.captured(1);
     }
@@ -34,7 +34,10 @@ bool FinishedZipContainer(const QFileInfo& file, const std::wstring& signature) 
 }
 }
 
-QString ArchiveVolumeGroup(const QString& filename) { return VolumeGroup(filename.toLower()); }
+QString ArchiveVolumeGroup(const QString& filename) {
+    const auto name = filename.toLower();
+    return VolumeGroup(name, ParseNumericArchivePart(name.toStdWString()));
+}
 
 NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback progress, const QStringList& relatedFiles, bool probePdfs) {
     NestedArchiveScan result;
@@ -48,13 +51,14 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
         if (!info.isFile() || info.isSymLink()) continue;
         const auto name = info.fileName().toLower();
         const auto signature = DetectArchiveSignature(path.toStdWString());
-        const auto group = VolumeGroup(name);
+        const auto numeric = ParseNumericArchivePart(name.toStdWString());
+        const auto group = VolumeGroup(name, numeric);
         if (FinishedZipContainer(info, signature)) {
-            if (!group.startsWith("part:")) { result.ignored.append(path); continue; }
+            if (!group.startsWith("part:") && !group.startsWith("numeric:")) { result.ignored.append(path); continue; }
         }
         if (!group.isEmpty()) {
             groups[group].append(path);
-            if (!signature.empty() || ArchiveName(name)) candidates.insert(group);
+            if (!signature.empty() || ArchiveName(name) || (numeric && numeric->masked)) candidates.insert(group);
         } else if (!signature.empty() || ArchiveName(name)) {
             result.archives.push_back(InspectArchiveFiles(path.toStdWString(), context));
         } else if (probePdfs && info.suffix().compare("pdf", Qt::CaseInsensitive) == 0) {
@@ -95,10 +99,12 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
         bool duplicate = false; QSet<QString> names;
         for (const auto& path : group.value()) {
             const auto name = QFileInfo(path).fileName().toLower();
-            if (names.contains(name)) duplicate = true;
-            names.insert(name);
+            const auto numeric = ParseNumericArchivePart(name.toStdWString());
+            const auto key = numeric ? QString::number(numeric->index) : name;
+            if (names.contains(key)) duplicate = true;
+            names.insert(key);
         }
-        // Identical part names in separate bundles must never be combined.
+        // A repeated logical volume in another directory may belong to an independent bundle.
         QMap<QString, std::vector<std::wstring>> bundles;
         for (const auto& path : group.value()) bundles[duplicate ? QFileInfo(path).absolutePath().toCaseFolded() : QString{}].push_back(path.toStdWString());
         for (const auto& bundle : bundles) inspectBundle(bundle);
