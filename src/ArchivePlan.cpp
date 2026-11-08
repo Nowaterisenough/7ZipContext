@@ -1,5 +1,6 @@
 #include "ArchivePlan.h"
 #include "WindowsPath.h"
+#include "7zCrc.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -234,6 +235,18 @@ std::wstring Signature(const fs::path& path, uint64_t* dataOffset = nullptr, uin
     }
     ZipVolumeInfo nativeZip;
     if (ZipVolumeTail(path, nativeZip)) return L"zip";
+    // Some MP4 carriers put a 7z start header in a free box after ftyp.
+    // Search only the already-read 64 KiB; a marker alone is not sufficient.
+    for (size_t at = 1; at + 32 <= static_cast<size_t>(n); ++at) {
+        if (!match(at, {0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c}) || data[at + 6] != 0) continue;
+        const uint32_t expected = data[at + 8] | (static_cast<uint32_t>(data[at + 9]) << 8) |
+            (static_cast<uint32_t>(data[at + 10]) << 16) | (static_cast<uint32_t>(data[at + 11]) << 24);
+        if (CrcCalc(data.data() + at + 12, 20) != expected) continue;
+        if (dataOffset) *dataOffset = at;
+        // Let the engine validate the rest, so truncated/corrupt archives are
+        // reported as failures instead of silently falling back to video.
+        return L"7z";
+    }
     return L"";
 }
 }

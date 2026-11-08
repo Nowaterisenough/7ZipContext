@@ -110,6 +110,54 @@ private slots:
         QVERIFY(found.archives.empty()); QCOMPARE(found.files.size(), 1); QCOMPARE(found.media.size(), 1);
         QCOMPARE(Read(found.media.first().files.first()), image);
     }
+    void finds7zBehindVideoPrefix_data() {
+        QTest::addColumn<int>("prefixSize"); QTest::addColumn<bool>("nested"); QTest::addColumn<bool>("encrypted");
+        QTest::newRow("mp4-free-box") << 36 << false << false;
+        QTest::newRow("nested-encrypted-mp4") << 36 << true << true;
+        QTest::newRow("last-complete-header-in-probe") << (65536 - 32) << false << false;
+    }
+    void finds7zBehindVideoPrefix() {
+        QFETCH(int, prefixSize); QFETCH(bool, nested); QFETCH(bool, encrypted); QTemporaryDir temp;
+        const QByteArray video("actual-inner-video"); QVERIFY(Write(temp.filePath("clip.mp4"), video));
+        const auto secret = encrypted ? QStringLiteral("embedded-7z-password") : QString{};
+        QVERIFY(Pack({temp.filePath("clip.mp4")}, temp.filePath("payload.7z"), secret));
+        // MP4 ftyp followed by a free box containing the 7z start header, as in the reported files.
+        QByteArray prefix = QByteArray::fromHex("0000001c6674797069736f350000020069736f3569736f366d7034310000002866726565");
+        QCOMPARE(prefix.size(), 36); prefix.append(QByteArray(prefixSize - prefix.size(), 'v'));
+        const auto carrier = prefix + Read(temp.filePath("payload.7z"));
+        const auto disguised = temp.filePath("disguised.mp4"); QVERIFY(Write(disguised, carrier));
+        const auto plan = InspectArchive(disguised.toStdWString());
+        QVERIFY(plan.error.empty()); QCOMPARE(plan.format, std::wstring(L"7z"));
+        QCOMPARE(plan.dataOffset, static_cast<uint64_t>(prefix.size()));
+        const auto found = DiscoverInputs({disguised}); QCOMPARE(found.archives.size(), size_t(1)); QVERIFY(found.media.isEmpty());
+        SevenZipCore core; QVERIFY(core.OpenArchive(plan, secret.toStdWString())); QVERIFY(core.TestArchive(secret.toStdWString())); core.CloseArchive();
+        const auto input = nested ? temp.filePath("outer.7z") : disguised;
+        if (nested) QVERIFY(Pack({disguised}, input));
+        ArchiveController controller(nullptr, temp.filePath("passwords.dat")); controller.organizeMedia = true; controller.autoPasswords = true;
+        if (encrypted) QVERIFY(controller.addPasswordList("embedded", secret));
+        controller.extractDestination = temp.filePath("output"); controller.addPaths({input}, false);
+        QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+        QCOMPARE(controller.tasks.size(), nested ? 2 : 1);
+        for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
+        QCOMPARE(controller.videoFiles.size(), 1); QCOMPARE(Read(controller.videoFiles.first()), video);
+        QCOMPARE(controller.cleanedIntermediateFiles, nested ? 1 : 0); QCOMPARE(Read(disguised), carrier);
+    }
+    void embedded7zRequiresValidStartHeaderAndReportsTruncation() {
+        QTemporaryDir temp; QVERIFY(Write(temp.filePath("clip.mp4"), "video"));
+        QVERIFY(Pack({temp.filePath("clip.mp4")}, temp.filePath("payload.7z")));
+        const auto archive = Read(temp.filePath("payload.7z"));
+        const auto prefix = QByteArray::fromHex("000000186674797069736f6d") + QByteArray(25, 'v');
+        auto corrupt = archive; corrupt[8] = static_cast<char>(corrupt[8] ^ 1);
+        const auto ordinary = temp.filePath("ordinary.mp4"); QVERIFY(Write(ordinary, prefix + corrupt));
+        QVERIFY(DetectArchiveSignature(ordinary.toStdWString()).empty());
+        const auto media = DiscoverInputs({ordinary}); QVERIFY(media.archives.empty()); QCOMPARE(media.media.size(), 1);
+        const auto marker = temp.filePath("marker.mp4"); QVERIFY(Write(marker, prefix + archive.first(6)));
+        QVERIFY(DetectArchiveSignature(marker.toStdWString()).empty());
+        // A valid start header with missing data must fail as an archive, not be copied as a video.
+        const auto truncated = temp.filePath("truncated.mp4"); QVERIFY(Write(truncated, prefix + archive.first(32)));
+        const auto found = DiscoverInputs({truncated}); QCOMPARE(found.archives.size(), size_t(1)); QVERIFY(found.media.isEmpty());
+        SevenZipCore core; QVERIFY(!core.OpenArchive(found.archives.front())); QVERIFY(QFileInfo::exists(truncated));
+    }
     void findsZip64BehindVideoPrefix_data() {
         QTest::addColumn<bool>("sentinels"); QTest::addColumn<bool>("localOffset64");
         QTest::newRow("ordinary-end-fields") << false << false;
