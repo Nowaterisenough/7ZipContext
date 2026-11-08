@@ -422,6 +422,22 @@ private slots:
         for (const auto& source : controller.passwordLibrary().lists()) QVERIFY(!source.entries.contains("renamed-code"));
         QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"only-a"})); QVERIFY(!popup.isVisible());
     }
+    void homeQuickAddWorksWithoutNamingOrLeavingExtraction() {
+        QTemporaryDir temp; ArchiveController controller(nullptr, temp.filePath("library.dat")); controller.rememberGeometry = false;
+        ArchiveWindow main(controller), popup(controller, true);
+        for (auto* window : {&main, &popup}) {
+            window->show(); window->navigate("extract"); QTest::qWait(30);
+            auto* input = window->findChild<QLineEdit*>("quickPassword"); QVERIFY(input && input->isVisible());
+            input->setText("  quick-secret  "); QTest::keyClick(input, Qt::Key_Return);
+            QCOMPARE(window->currentPage(), QStringLiteral("extract")); QVERIFY(input->text().isEmpty());
+            QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"  quick-secret  "}));
+            QVERIFY(!controller.busy()); QVERIFY(!QApplication::activeModalWidget());
+            QCOMPARE(main.findChild<QListWidget*>("passwordLists")->count(), 1);
+            QCOMPARE(popup.findChild<QListWidget*>("passwordLists")->count(), 1);
+        }
+        QString error; PasswordLibrary saved(temp.filePath("library.dat")); QVERIFY(saved.load(error));
+        QCOMPARE(saved.enabledPasswords(), QStringList({"  quick-secret  "}));
+    }
     void updateControlsSynchronizeAndAreSearchable() {
         QTemporaryDir temporary;
         ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;

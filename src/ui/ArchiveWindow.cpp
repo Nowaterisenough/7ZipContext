@@ -384,6 +384,18 @@ QWidget* ArchiveWindow::makeQueue(bool sources) {
 
 QWidget* ArchiveWindow::makeExtractPage() {
     QVBoxLayout* layout; auto* page = Page(layout, "extractPage");
+    auto* quickPassword = new QWidget;
+    auto* quickLayout = new QHBoxLayout(quickPassword); quickLayout->setContentsMargins(0, 0, 0, 0); quickLayout->setSpacing(8);
+    auto* savedPassword = Edit("quickPassword", QStringLiteral("输入常用密码，回车添加")); savedPassword->setMaxLength(1024);
+    auto* addPassword = Button(QStringLiteral("添加密码"), "quickAddPassword");
+    auto* passwords = Button(QStringLiteral("密码列表"), "openPasswordLists");
+    quickLayout->addWidget(savedPassword, 1); quickLayout->addWidget(addPassword); quickLayout->addWidget(passwords);
+    layout->addWidget(quickPassword);
+    const auto savePassword = [this, savedPassword] {
+        if (controller_.addPasswords(savedPassword->text())) { savedPassword->clear(); savedPassword->setFocus(); }
+    };
+    connect(addPassword, &QPushButton::clicked, this, savePassword);
+    connect(savedPassword, &QLineEdit::returnPressed, this, savePassword);
     auto* toolbar = new QHBoxLayout; toolbar->setSpacing(8);
     auto* add = Button(QStringLiteral("添加文件…"), "addArchive");
     auto* folder = Button(QStringLiteral("添加文件夹…"), "addExtractionFolder");
@@ -401,8 +413,7 @@ QWidget* ArchiveWindow::makeExtractPage() {
     Row(card, QStringLiteral("解压方式"), {}, extractMode_);
     extractMode_->setToolTip(QStringLiteral("已有文件不会覆盖"));
     extractPassword_ = Edit("extractPassword", QStringLiteral("输入密码（可选）"), true);
-    auto* passwords = Button(QStringLiteral("密码单…"), "openPasswordLists");
-    Row(card, QStringLiteral("解压密码"), {}, WithBrowse(extractPassword_, passwords));
+    Row(card, QStringLiteral("本次密码"), {}, extractPassword_);
     autoNested_ = Segments("autoNested", {QStringLiteral("关闭"), QStringLiteral("开启")});
     autoNested_->setAccessibleName(QStringLiteral("自动解压内层"));
     Row(card, QStringLiteral("自动解压内层"), {}, autoNested_);
@@ -414,8 +425,10 @@ QWidget* ArchiveWindow::makeExtractPage() {
     auto* actions = new QHBoxLayout;
     auto* test = Button(QStringLiteral("检测完整性"), "testArchives");
     auto* start = Button(QStringLiteral("开始解压"), "startExtraction", true);
-    actions->addWidget(test); actions->addWidget(correct); actions->addStretch(); actions->addWidget(start); layout->addLayout(actions); layout->addStretch();
-    editable_ << add << folder << correct << remove << clear << card << test << start;
+    actions->addWidget(test); actions->addWidget(correct); actions->addStretch();
+    actions->addWidget(start);
+    layout->addLayout(actions); layout->addStretch();
+    editable_ << add << folder << correct << remove << clear << card << test << start << quickPassword;
     connect(add, &QPushButton::clicked, this, [this] { pickFiles(); });
     connect(folder, &QPushButton::clicked, this, [this] { pickFiles(true); });
     connect(archives_, &QListWidget::currentRowChanged, this, &ArchiveWindow::syncQueueActions);
@@ -790,7 +803,7 @@ void ArchiveWindow::syncOptions() {
     extractMode_->setToolTip(controller_.organizeMedia ? QStringLiteral("媒体整理使用独立目录") : QStringLiteral("已有文件不会覆盖"));
     autoNested_->setToolTip(controller_.organizeMedia ? QStringLiteral("媒体整理会解压所有内层压缩包")
         : QStringLiteral("逐层解压，成功后清理中间包；原始压缩包保留"));
-    extractPassword_->setPlaceholderText(controller_.autoPasswords ? QStringLiteral("自动匹配密码单") : QStringLiteral("输入密码（可选）"));
+    extractPassword_->setPlaceholderText(controller_.autoPasswords ? QStringLiteral("留空自动尝试已保存密码") : QStringLiteral("输入密码（可选）"));
     extractPassword_->setToolTip(controller_.autoPasswords ? QStringLiteral("手动输入的密码优先") : QString{});
     syncQueueActions();
 }
