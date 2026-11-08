@@ -118,6 +118,7 @@ private:
     };
     void finish(Result result);
     void applyDiscoveredInputs(DiscoveredInputs inputs);
+    QStringList queuedInputPaths() const;
     bool savePasswordLists(const QList<PasswordList>& lists);
     enum class Phase { Idle, InputScanning, Opening, Passwords, Extracting, Scanning, Cleaning, Organizing, CopyingMedia, Testing, Correcting, Compressing };
     std::atomic<Phase> phase_{Phase::Idle};

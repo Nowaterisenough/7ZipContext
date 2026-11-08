@@ -170,7 +170,7 @@ bool ArchiveController::removePasswordList(const QString& id) {
 void ArchiveController::addPaths(const QStringList& paths, bool compress) {
     if (busy()) { setStatus(QStringLiteral("当前任务结束后可继续添加文件")); return; }
     if (paths.isEmpty()) return;
-    if (!compress) { applyDiscoveredInputs(DiscoverInputs(paths)); return; }
+    if (!compress) { applyDiscoveredInputs(DiscoverInputs(queuedInputPaths() + paths)); return; }
     for (const auto& input : paths) {
         const auto path = QDir::toNativeSeparators(QFileInfo(input).absoluteFilePath());
         if (compress) {
@@ -187,27 +187,27 @@ void ArchiveController::addPaths(const QStringList& paths, bool compress) {
                        : QStringLiteral("已添加 %1 组压缩包，可先检测完整性").arg(archives.size()));
 }
 
+QStringList ArchiveController::queuedInputPaths() const {
+    QStringList paths = ignoredInputFiles;
+    for (const auto& plan : archives) {
+        paths.append(Q(plan.input));
+        for (const auto& volume : plan.volumes) paths.append(Q(volume));
+    }
+    for (const auto& group : mediaInputs) paths.append(group.files);
+    QSet<QString> seen;
+    paths.removeIf([&](const auto& path) {
+        const auto key = ArchiveKey(path.toStdWString()); if (seen.contains(key)) return true; seen.insert(key); return false;
+    });
+    return paths;
+}
+
 void ArchiveController::applyDiscoveredInputs(DiscoveredInputs inputs) {
     if (inputs.cancelled) { setStatus(QStringLiteral("已取消文件扫描")); return; }
-    for (auto& plan : inputs.archives) {
-        auto existing = std::find_if(archives.begin(), archives.end(), [&](const auto& old) {
-            if (ArchiveKey(old.firstVolume) == ArchiveKey(plan.firstVolume)) return true;
-            return std::any_of(plan.volumes.begin(), plan.volumes.end(), [&](const auto& file) { return ArchiveKey(file) == ArchiveKey(old.input); });
-        });
-        if (existing == archives.end()) archives.push_back(std::move(plan)); else *existing = std::move(plan);
-    }
-    for (auto& group : inputs.media) {
-        auto existing = std::find_if(mediaInputs.begin(), mediaInputs.end(), [&](const auto& old) { return ArchiveKey(old.directory.toStdWString()) == ArchiveKey(group.directory.toStdWString()); });
-        if (existing == mediaInputs.end()) mediaInputs.append(std::move(group));
-        else for (const auto& file : group.files) {
-            if (std::none_of(existing->files.begin(), existing->files.end(), [&](const auto& old) { return ArchiveKey(old.toStdWString()) == ArchiveKey(file.toStdWString()); })) existing->files.append(file);
-        }
-    }
-    auto appendUnique = [](QStringList& target, const QStringList& values) {
-        QSet<QString> keys; for (const auto& value : target) keys.insert(ArchiveKey(value.toStdWString()));
-        for (const auto& value : values) if (!keys.contains(ArchiveKey(value.toStdWString()))) { target.append(value); keys.insert(ArchiveKey(value.toStdWString())); }
-    };
-    appendUnique(ignoredInputFiles, inputs.ignored); appendUnique(discoveredInputFiles, inputs.files);
+    // Rediscover the active queue together with new inputs, so a later drop can
+    // complete a cross-directory bundle and replace its earlier missing-volume row.
+    archives = std::move(inputs.archives); mediaInputs = std::move(inputs.media);
+    ignoredInputFiles = std::move(inputs.ignored); discoveredInputFiles = std::move(inputs.files);
+    associatedInputFiles.clear();
     emit queueChanged(); emit optionsChanged();
     setStatus(QStringLiteral("已识别 %1 组压缩包、%2 组媒体 · 忽略 %3 个辅助文件")
         .arg(archives.size()).arg(mediaInputs.size()).arg(ignoredInputFiles.size()));
@@ -224,18 +224,18 @@ void ArchiveController::queuePaths(const QStringList& paths, bool compress, bool
     if (busy()) { setStatus(QStringLiteral("当前任务结束后可继续添加文件")); return; }
     if (paths.isEmpty()) return;
     if (scanWorker_.joinable()) scanWorker_.join();
+    const auto scanPaths = replace ? paths : queuedInputPaths() + paths;
     scanning_ = true; scanCancelled_ = false; cancelled_ = false; paused_ = false;
     completed_ = 0; total_ = 0; extractionDepth_ = 0; jobIndex_ = 0; jobCount_ = 0; speed_ = 0;
     phase_ = Phase::InputScanning; lastBytes_ = 0; sampledAt_ = std::chrono::steady_clock::now();
     setStatus(QStringLiteral("正在扫描文件和目录…")); emit busyChanged(); timer_.start();
-    scanWorker_ = std::thread([this, paths, replace, startAfterScan] {
-        auto inputs = DiscoverInputs(paths, [this](uint64_t, uint64_t) { return !scanCancelled_; });
-        QMetaObject::invokeMethod(this, [this, replace, startAfterScan, inputs = std::move(inputs)]() mutable {
+    scanWorker_ = std::thread([this, scanPaths, startAfterScan] {
+        auto inputs = DiscoverInputs(scanPaths, [this](uint64_t, uint64_t) { return !scanCancelled_; });
+        QMetaObject::invokeMethod(this, [this, startAfterScan, inputs = std::move(inputs)]() mutable {
             if (scanWorker_.joinable()) scanWorker_.join();
             inputs.cancelled = inputs.cancelled || scanCancelled_;
             const bool launch = startAfterScan && !inputs.cancelled && !quitAfterJob_;
             timer_.stop(); scanning_ = false; phase_ = Phase::Idle; cancelled_ = false;
-            if (replace && !inputs.cancelled) { archives.clear(); mediaInputs.clear(); ignoredInputFiles.clear(); discoveredInputFiles.clear(); }
             applyDiscoveredInputs(std::move(inputs));
             // Keep one busy interval from intake through extraction so callers cannot mistake scan completion for job completion.
             if (launch && start(Operation::Extract)) return;
@@ -261,10 +261,7 @@ void ArchiveController::clear(bool compress) {
 }
 void ArchiveController::rescan() {
     if (busy()) return;
-    QStringList paths;
-    for (const auto& plan : archives) paths.append(Q(plan.input));
-    for (const auto& group : mediaInputs) paths.append(group.files);
-    queuePaths(paths, false, true);
+    queuePaths(queuedInputPaths(), false, true);
 }
 
 bool ArchiveController::start(Operation operation, int selected) {

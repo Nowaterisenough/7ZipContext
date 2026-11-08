@@ -376,7 +376,7 @@ private slots:
         QTest::addColumn<QString>("style"); QTest::addColumn<QString>("format"); QTest::addColumn<QString>("intake");
         const QList<QPair<QString, QString>> cases{{"numeric", "7z"}, {"masked", "zip"}, {"inserted", "7z"},
             {"named", "7z"}, {"numeric", "rar"}, {"named", "rar"}};
-        for (const auto& entry : cases) for (const auto* intake : {"parent", "folders", "nested"}) {
+        for (const auto& entry : cases) for (const auto* intake : {"parent", "folders", "batches", "nested"}) {
             const auto label = (entry.first + '-' + entry.second + '-' + intake).toUtf8();
             QTest::newRow(label.constData()) << entry.first << entry.second << QString(intake);
         }
@@ -426,6 +426,11 @@ private slots:
         QVERIFY(controller.addPasswordList("folder-test", "folder-secret")); controller.extractDestination = temp.filePath("output");
         if (intake == "nested") {
             QVERIFY(Pack({selected}, temp.filePath("outer.7z"))); controller.addPaths({temp.filePath("outer.7z")}, false);
+        } else if (intake == "batches") {
+            for (const auto& folder : folders) {
+                controller.queuePaths({folder}, false); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+            }
+            controller.rescan(); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
         } else controller.addPaths(intake == "folders" ? folders : QStringList{selected}, false);
         QCOMPARE(controller.archives.size(), intake == "nested" ? size_t(1) : size_t(4));
         QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);

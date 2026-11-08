@@ -91,6 +91,18 @@ private slots:
         const auto empty = DiscoverInputs({temp.filePath("input/empty")});
         QVERIFY(empty.files.isEmpty()); QVERIFY(empty.archives.empty()); QVERIFY(empty.media.isEmpty());
     }
+    void addingAnotherBatchKeepsRemovedInputsOutOfTheQueue() {
+        QTemporaryDir temp; const auto source = temp.filePath("fixture/clip.mp4"); QVERIFY(Write(source, "video"));
+        const auto first = temp.filePath("one/first.7z"), second = temp.filePath("two/second.7z");
+        QVERIFY(Pack({source}, first)); QVERIFY(Pack({source}, second));
+        ArchiveController controller(nullptr, temp.filePath("passwords.dat"));
+        controller.addPaths({first}, false); QCOMPARE(controller.archives.size(), size_t(1));
+        controller.remove(0, false); QVERIFY(controller.archives.empty());
+        controller.queuePaths({second}, false); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+        QCOMPARE(controller.archives.size(), size_t(1));
+        QCOMPARE(QFileInfo(QString::fromStdWString(controller.archives.front().input)), QFileInfo(second));
+        QCOMPARE(controller.discoveredInputFiles.size(), 1);
+    }
     void cancellingBackgroundScanPreservesExistingQueue() {
         QTemporaryDir temp; QVERIFY(Write(temp.filePath("fixture/video.mp4"), "video"));
         QVERIFY(Pack({temp.filePath("fixture/video.mp4")}, temp.filePath("existing.7z")));
