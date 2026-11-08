@@ -138,6 +138,72 @@ private slots:
         const auto disabled = BuildPasswordCandidates({}, lists, true, "right");
         for (const auto& candidate : disabled) QVERIFY(candidate.value != "right" && candidate.value != "disabled-password");
     }
+    void flatPasswordEditsCoverLegacyCopiesAndPreserveExactValues() {
+        QTemporaryDir temp; const auto path = temp.filePath("library.dat");
+        ArchiveController controller(nullptr, path);
+        const QHash<QString, QString> notesA{{"shared", "first note"}}, notesB{{"shared", "second note"}};
+        QVERIFY(controller.addPasswordList("legacy A", "shared\n  exact  \nSHARED", &notesA));
+        QVERIFY(controller.addPasswordList("legacy B", "shared\ndisabled-a\ndisabled-b", &notesB));
+        QVERIFY(controller.setPasswordListEnabled(controller.passwordLibrary().lists().last().id, false));
+        QVERIFY(controller.editPassword("shared", " changed "));
+        for (const auto& list : controller.passwordLibrary().lists()) {
+            QVERIFY(!list.entries.contains("shared")); QVERIFY(!list.comments.contains("shared"));
+            QVERIFY(list.entries.contains(" changed "));
+        }
+        QCOMPARE(controller.passwordLibrary().uniquePasswords().first().value, QString(" changed "));
+        QCOMPARE(controller.passwordLibrary().uniquePasswords().first().sources.size(), 2);
+        QVERIFY(controller.setPasswordEnabled(" changed ", false));
+        QVERIFY(!controller.passwordLibrary().enabledPasswords().contains(" changed "));
+        QVERIFY(controller.passwordLibrary().enabledPasswords().contains("  exact  "));
+        QVERIFY(controller.passwordLibrary().enabledPasswords().contains("SHARED"));
+        QVERIFY(controller.addPasswords("disabled-a\nnew\nnew\n  exact  "));
+        QVERIFY(controller.passwordLibrary().enabledPasswords().contains("disabled-a"));
+        QVERIFY(!controller.passwordLibrary().enabledPasswords().contains("disabled-b"));
+        const auto saved = Read(path);
+        QVERIFY(controller.addPasswords("new\nnew\n  exact  ")); QCOMPARE(Read(path), saved);
+        QVERIFY(!controller.editPassword("new", "")); QVERIFY(!controller.editPassword("new", "bad\npassword"));
+        QCOMPARE(Read(path), saved);
+        QVERIFY(controller.removePasswords({" changed ", "new", "new"}));
+        for (const auto& list : controller.passwordLibrary().lists()) {
+            QVERIFY(!list.entries.contains(" changed ")); QVERIFY(!list.entries.contains("new"));
+        }
+        QString error; PasswordLibrary restored(path); QVERIFY(restored.load(error));
+        QCOMPARE(restored.enabledPasswords(), controller.passwordLibrary().enabledPasswords());
+        QVERIFY(restored.enabledPasswords().contains("  exact  ")); QVERIFY(!restored.enabledPasswords().contains("exact"));
+        QStringList all; for (const auto& entry : restored.uniquePasswords()) all << entry.value;
+        QVERIFY(controller.removePasswords(all)); QVERIFY(controller.passwordLibrary().uniquePasswords().isEmpty());
+        QVERIFY(restored.load(error)); QVERIFY(restored.uniquePasswords().isEmpty());
+    }
+    void flatPasswordImportMergesFilesAndPreservesUnreadableStorage() {
+        QTemporaryDir temp; const auto first = temp.filePath("first.txt"), second = temp.filePath("second.txt");
+        QVERIFY(Write(first, "one\ntwo\none\n")); QVERIFY(Write(second, "two\nthree\n"));
+        ArchiveController controller(nullptr, temp.filePath("library.dat"));
+        QVERIFY(controller.importPasswords(first)); QVERIFY(controller.importPasswords(second));
+        QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"one", "two", "three"}));
+        QVERIFY(controller.editPassword("one", "two"));
+        QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"two", "three"}));
+        QCOMPARE(Read(first), QByteArray("one\ntwo\none\n"));
+        const auto broken = temp.filePath("broken.dat"); QVERIFY(Write(broken, "invalid encrypted library"));
+        ArchiveController unreadable(nullptr, broken); QVERIFY(!unreadable.addPasswords("new"));
+        QCOMPARE(Read(broken), QByteArray("invalid encrypted library"));
+    }
+    void flatActionsPreserveLongLegacyNotesWhenValuesMerge() {
+        QTemporaryDir temp; ArchiveController controller(nullptr, temp.filePath("library.dat"));
+        const QString first(1800, 'a'), second(1800, 'b'), third(1800, 'c');
+        const QHash<QString, QString> a{{"old", first}, {"new", second}}, b{{"old", third}};
+        QVERIFY(controller.addPasswordList("A", "old\nnew\nkeep", &a));
+        QVERIFY(controller.addPasswordList("B", "old\nother", &b));
+        QVERIFY(controller.setPasswordEnabled("old", false)); QVERIFY(controller.addPasswords("old"));
+        QVERIFY(controller.editPassword("old", "new"));
+        QStringList notes;
+        for (const auto& entry : controller.passwordLibrary().uniquePasswords()) if (entry.value == "new")
+            for (const auto& source : entry.sources) if (!source.comment.isEmpty()) notes << source.comment;
+        QCOMPARE(notes.size(), 3); QVERIFY(notes.contains(first)); QVERIFY(notes.contains(second)); QVERIFY(notes.contains(third));
+        QVERIFY(controller.setPasswordEnabled("new", false));
+        QVERIFY(!controller.passwordLibrary().enabledPasswords().contains("new"));
+        QVERIFY(controller.passwordLibrary().enabledPasswords().contains("keep"));
+        QVERIFY(controller.passwordLibrary().enabledPasswords().contains("other"));
+    }
     void encryptedDataAndHeaders_data() {
         QTest::addColumn<QString>("format"); QTest::addColumn<bool>("header"); QTest::addColumn<bool>("volumes");
         QTest::newRow("zip-aes") << QString("zip") << false << false;
@@ -156,7 +222,7 @@ private slots:
         const auto candidates = BuildPasswordCandidates("manual-incorrect", lists, true);
         const auto result = ResolveArchivePassword(core, archive.toStdWString(), candidates, [](uint64_t, uint64_t) { return true; });
         QCOMPARE(result.state, ArchivePasswordResult::State::Ready); QVERIFY(result.verified);
-        QCOMPARE(result.attempts, 4); QCOMPARE(result.password, password); QVERIFY(result.source.contains("test-list"));
+        QCOMPARE(result.attempts, 4); QCOMPARE(result.password, password); QCOMPARE(result.source, QStringLiteral("密码列表"));
         const auto output = temporary.filePath("extracted"); QVERIFY(!QFileInfo::exists(output));
         QVERIFY2(core.Extract(output.toStdWString(), result.password.toStdWString()), qPrintable(QString::fromStdWString(core.LastError())));
         QCOMPARE(Read(output + "/payload.txt"), Read(temporary.filePath("payload.txt"))); core.CloseArchive();
@@ -230,6 +296,10 @@ private slots:
         QVERIFY(controller.addPasswordList("list", "one\ntwo\nthree"));
         controller.addPaths({archive}, false); controller.extractDestination = temporary.filePath("cancel-output");
         QVERIFY(controller.start(ArchiveController::Operation::Extract)); controller.togglePause(); QVERIFY(controller.paused());
+        const auto before = Read(temporary.filePath("library.dat"));
+        QVERIFY(!controller.addPasswords("new")); QVERIFY(!controller.editPassword("one", "edited"));
+        QVERIFY(!controller.removePasswords({"one"})); QVERIFY(!controller.setPasswordEnabled("one", false));
+        QCOMPARE(Read(temporary.filePath("library.dat")), before);
         QTest::qWait(80); QVERIFY(controller.busy());
         controller.cancel(); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
         QVERIFY(!QFileInfo::exists(controller.extractDestination));

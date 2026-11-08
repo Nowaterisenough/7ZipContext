@@ -5,7 +5,6 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
-#include <QDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -16,8 +15,6 @@
 #include <QListWidget>
 #include <QMimeData>
 #include <QPushButton>
-#include <QPlainTextEdit>
-#include <QTableWidget>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -352,98 +349,78 @@ private slots:
         imported.write("first-private-password\n second-private-password \nfirst-private-password\n"); imported.close();
         ArchiveController controller(nullptr, temporary.filePath("library.dat"));
         controller.rememberGeometry = false; controller.autoPasswords = true;
-        ArchiveWindow main(controller), popup(controller, true);
-        main.show(); QTest::qWait(30);
+        ArchiveWindow main(controller), popup(controller, true); main.show(); QTest::qWait(30);
         QTest::mouseClick(main.findChild<QPushButton*>("openPasswordLists"), Qt::LeftButton);
         QCOMPARE(main.currentPage(), QStringLiteral("passwords"));
-        auto* lists = main.findChild<QListWidget*>("passwordLists");
-        auto* popupLists = popup.findChild<QListWidget*>("passwordLists");
-        QVERIFY(lists && popupLists); QCOMPARE(lists->count(), 0);
-        QVERIFY(controller.importPasswordList(imported.fileName()));
-        QCOMPARE(lists->count(), 2); QCOMPARE(popupLists->count(), 2);
-        QCOMPARE(controller.passwordLibrary().enabledPasswords().size(), 2);
-        QCOMPARE(main.findChild<QLabel*>("passwordSummary")->text(), popup.findChild<QLabel*>("passwordSummary")->text());
-        QCOMPARE(lists->item(0)->text(), QStringLiteral("first-private-password"));
-        QVERIFY(lists->item(0)->toolTip().contains(QStringLiteral("来源：imported-list")));
-        QTest::mouseClick(main.findChild<QPushButton*>("togglePasswords"), Qt::LeftButton);
-        QCOMPARE(controller.passwordLibrary().enabledCount(), 0);
-        QCOMPARE(popup.findChild<QPushButton*>("togglePasswords")->text(), QStringLiteral("启用密码单"));
-        QTest::mouseClick(main.findChild<QPushButton*>("togglePasswords"), Qt::LeftButton);
-        auto* automatic = main.findChild<QTabBar*>("autoPasswords"); QVERIFY(automatic);
-        QTest::mouseClick(automatic, Qt::LeftButton, Qt::NoModifier, automatic->tabRect(1 - automatic->currentIndex()).center()); QVERIFY(!controller.autoPasswords);
-        QVERIFY(!popup.findChild<QTabBar*>("autoPasswords")->currentIndex());
-        QTest::mouseClick(automatic, Qt::LeftButton, Qt::NoModifier, automatic->tabRect(1 - automatic->currentIndex()).center()); QVERIFY(controller.autoPasswords);
+        auto* list = main.findChild<QListWidget*>("passwordLists");
+        auto* popupList = popup.findChild<QListWidget*>("passwordLists");
+        QVERIFY(list && popupList); QCOMPARE(list->count(), 0);
+        QVERIFY(controller.importPasswords(imported.fileName()));
+        QCOMPARE(list->count(), 2); QCOMPARE(popupList->count(), 2);
+        QVERIFY(!main.findChild<QComboBox*>("passwordListSource"));
+        QVERIFY(!main.findChild<QLineEdit*>("passwordListName"));
+        QVERIFY(!main.findChild<QLabel*>("passwordSummary")->text().contains(QStringLiteral("密码单")));
+        QVERIFY(!list->item(0)->toolTip().contains(QStringLiteral("来源")));
+        QVERIFY(list->item(0)->flags() & Qt::ItemIsEditable);
+        const auto find = [&](const QString& value) { const auto matches = list->findItems(value, Qt::MatchExactly); return matches.isEmpty() ? nullptr : matches.first(); };
+        find("first-private-password")->setCheckState(Qt::Unchecked);
+        QTRY_VERIFY(!controller.passwordLibrary().enabledPasswords().contains("first-private-password"));
+        QVERIFY(controller.passwordLibrary().enabledPasswords().contains(" second-private-password "));
+        find("first-private-password")->setCheckState(Qt::Checked);
+        QTRY_COMPARE(controller.passwordLibrary().enabledPasswords().size(), 2);
+        auto* automatic = main.findChild<QTabBar*>("autoPasswords");
+        automatic->setCurrentIndex(0); QVERIFY(!controller.autoPasswords);
+        QCOMPARE(popup.findChild<QTabBar*>("autoPasswords")->currentIndex(), 0);
+        automatic->setCurrentIndex(1); QVERIFY(controller.autoPasswords);
 
-        QTimer timeout;
-        connect(&timeout, &QTimer::timeout, this, [] {
-            if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) dialog->reject();
-        });
-        timeout.start(2000);
-        bool edited = false;
-        QTimer::singleShot(0, &main, [&] {
-            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()); QVERIFY(dialog);
-            auto* entries = dialog->findChild<QTableWidget*>("passwordListEntries"); QVERIFY(entries);
-            QCOMPARE(entries->item(0, 0)->text(), QStringLiteral("first-private-password"));
-            QCOMPARE(entries->item(1, 0)->text(), QStringLiteral(" second-private-password "));
-            entries->item(0, 0)->setText(" changed-private-password "); entries->item(0, 1)->setText(QStringLiteral("下载分卷专用"));
-            entries->item(1, 0)->setText("new-private-password");
-            dialog->findChild<QLineEdit*>("passwordListName")->setText(QStringLiteral("已编辑的密码单"));
-            QVERIFY(QDir().mkpath("ui-snapshots")); QVERIFY(dialog->grab().save("ui-snapshots/editor-table.png"));
-            QTest::mouseClick(dialog->findChild<QPushButton*>("savePasswordEditor"), Qt::LeftButton); edited = true;
-        });
-        QTest::mouseClick(main.findChild<QPushButton*>("editPasswords"), Qt::LeftButton); QVERIFY(edited);
-        QCOMPARE(controller.passwordLibrary().lists()[0].entries, QStringList({" changed-private-password ", "new-private-password"}));
-        QCOMPARE(lists->item(0)->text(), QStringLiteral(" changed-private-password "));
-        QVERIFY(lists->item(0)->toolTip().contains(QStringLiteral("下载分卷专用")));
-        QCOMPARE(controller.passwordLibrary().lists()[0].comments.value(" changed-private-password "), QStringLiteral("下载分卷专用"));
-        QCOMPARE(popupLists->item(0)->text(), lists->item(0)->text());
-
-        bool added = false;
-        QTimer::singleShot(0, &main, [&] {
-            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget()); QVERIFY(dialog);
-            auto* save = dialog->findChild<QPushButton*>("savePasswordEditor"); QVERIFY(save);
-            QTest::mouseClick(save, Qt::LeftButton); QVERIFY(dialog->isVisible());
-            dialog->findChild<QLineEdit*>("passwordListName")->setText(QStringLiteral("备用"));
-            dialog->findChild<QTableWidget*>("passwordListEntries")->item(0, 0)->setText("backup-private-password");
-            QTest::mouseClick(save, Qt::LeftButton); added = true;
-        });
-        QTest::mouseClick(main.findChild<QPushButton*>("addPasswords"), Qt::LeftButton); QVERIFY(added); timeout.stop();
-        QCOMPARE(lists->count(), 3); QCOMPARE(popupLists->count(), 3);
-        auto* search = main.findChild<QLineEdit*>("searchSettings"); search->setText(QStringLiteral("备用"));
-        QVERIFY(lists->item(0)->isHidden()); QVERIFY(!lists->item(2)->isHidden());
-        search->setText(QStringLiteral("下载分卷")); QVERIFY(!lists->item(0)->isHidden()); QVERIFY(lists->item(2)->isHidden()); search->clear();
-        lists->setCurrentRow(0);
+        list->setCurrentItem(find("first-private-password"));
+        QTest::mouseClick(main.findChild<QPushButton*>("editPasswords"), Qt::LeftButton);
+        QTRY_VERIFY(list->findChild<QLineEdit*>());
+        auto* editor = list->findChild<QLineEdit*>(); editor->selectAll();
+        QTest::keyClicks(editor, " changed-private-password "); QTest::keyClick(editor, Qt::Key_Return);
+        QTRY_VERIFY(controller.passwordLibrary().enabledPasswords().contains(" changed-private-password "));
+        QVERIFY(!controller.passwordLibrary().enabledPasswords().contains("first-private-password"));
+        QCOMPARE(popupList->findItems(" changed-private-password ", Qt::MatchExactly).size(), 1);
+        QVERIFY(!QApplication::activeModalWidget());
+        auto* input = main.findChild<QLineEdit*>("passwordInput"); input->setText("backup-private-password");
+        QTest::keyClick(input, Qt::Key_Return); QCOMPARE(list->count(), 3); QCOMPARE(popupList->count(), 3); QVERIFY(input->text().isEmpty());
+        find("backup-private-password")->setText("");
+        QTRY_VERIFY(find("backup-private-password")); QCOMPARE(list->count(), 3);
+        auto* search = main.findChild<QLineEdit*>("searchSettings"); search->setText("backup");
+        QVERIFY(find(" changed-private-password ")->isHidden()); QVERIFY(!find("backup-private-password")->isHidden());
         QTest::mouseClick(main.findChild<QPushButton*>("removePasswords"), Qt::LeftButton);
-        QCOMPARE(lists->count(), 1); QCOMPARE(popupLists->count(), 1);
+        QCOMPARE(list->count(), 2); QCOMPARE(popupList->count(), 2); QVERIFY(!find("backup-private-password"));
+        search->clear(); list->setFocus(); list->selectAll(); QTest::keyClick(list, Qt::Key_Delete);
+        QCOMPARE(list->count(), 0); QCOMPARE(popupList->count(), 0);
         QVERIFY(QFileInfo::exists(imported.fileName())); QVERIFY(!popup.isVisible());
         QString error; PasswordLibrary restored(temporary.filePath("library.dat")); QVERIFY(restored.load(error));
-        QCOMPARE(restored.lists().size(), 1); QCOMPARE(restored.lists()[0].name, QStringLiteral("备用"));
+        QVERIFY(restored.uniquePasswords().isEmpty());
     }
-    void sharedPasswordsAppearOnceAndKeepEachSourceManageable() {
+    void flatPasswordActionsCoverAllLegacyCopies() {
         QTemporaryDir temp; ArchiveController controller(nullptr, temp.filePath("library.dat")); controller.rememberGeometry = false;
-        const QHash<QString, QString> firstNotes{{"shared-code", "first-source-note"}};
-        const QHash<QString, QString> secondNotes{{"shared-code", "second-source-note"}};
+        const QHash<QString, QString> firstNotes{{"shared-code", "first-source-note"}}, secondNotes{{"shared-code", "second-source-note"}};
         QVERIFY(controller.addPasswordList("source A", "shared-code\nonly-a", &firstNotes));
         QVERIFY(controller.addPasswordList("source B", "shared-code\nonly-b", &secondNotes));
-        const auto secondId = controller.passwordLibrary().lists()[1].id;
-        QVERIFY(controller.setPasswordListEnabled(secondId, false));
+        QVERIFY(controller.setPasswordListEnabled(controller.passwordLibrary().lists().last().id, false));
         ArchiveWindow main(controller), popup(controller, true); main.show(); main.navigate("passwords"); QTest::qWait(30);
         auto* list = main.findChild<QListWidget*>("passwordLists"); auto* trayList = popup.findChild<QListWidget*>("passwordLists");
-        QCOMPARE(list->count(), 3); QCOMPARE(trayList->count(), 3); QCOMPARE(list->item(0)->text(), QStringLiteral("shared-code"));
-        QVERIFY(list->item(0)->toolTip().contains("first-source-note")); QVERIFY(list->item(0)->toolTip().contains("second-source-note"));
-        auto* sources = main.findChild<QComboBox*>("passwordListSource"); QVERIFY(sources && sources->isVisible()); QCOMPARE(sources->count(), 2);
-        auto* search = main.findChild<QLineEdit*>("searchSettings"); search->setText("second-source-note");
-        QVERIFY(!list->item(0)->isHidden()); QVERIFY(list->item(1)->isHidden()); QVERIFY(list->item(2)->isHidden());
-        search->setText("no-match"); QCOMPARE(list->currentRow(), -1); QVERIFY(!main.findChild<QPushButton*>("removePasswords")->isEnabled());
-        search->clear(); QCOMPARE(list->currentRow(), 0);
-        sources->setCurrentIndex(sources->findData(secondId));
-        QCOMPARE(main.findChild<QPushButton*>("togglePasswords")->text(), QStringLiteral("启用密码单"));
-        QTest::mouseClick(main.findChild<QPushButton*>("togglePasswords"), Qt::LeftButton);
-        QCOMPARE(controller.passwordLibrary().enabledCount(), 2); QCOMPARE(sources->currentData().toString(), secondId);
+        QCOMPARE(list->count(), 3); QCOMPARE(trayList->count(), 3);
+        QCOMPARE(list->findItems("shared-code", Qt::MatchExactly).size(), 1);
+        auto* item = list->findItems("shared-code", Qt::MatchExactly).first();
+        QVERIFY(!item->toolTip().contains("source"));
+        item->setText("renamed-code");
+        QTRY_COMPARE(list->findItems("renamed-code", Qt::MatchExactly).size(), 1);
+        QTRY_VERIFY(!controller.passwordLibrary().enabledPasswords().contains("shared-code"));
+        for (const auto& source : controller.passwordLibrary().lists()) QVERIFY(!source.entries.contains("shared-code"));
+        QCOMPARE(trayList->findItems("renamed-code", Qt::MatchExactly).size(), 1);
+        list->findItems("renamed-code", Qt::MatchExactly).first()->setCheckState(Qt::Unchecked);
+        QTRY_VERIFY(!controller.passwordLibrary().enabledPasswords().contains("renamed-code"));
+        QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"only-a"}));
+        list->setCurrentItem(list->findItems("renamed-code", Qt::MatchExactly).first());
         QTest::mouseClick(main.findChild<QPushButton*>("removePasswords"), Qt::LeftButton);
-        QCOMPARE(list->count(), 2); QCOMPARE(trayList->count(), 2); QCOMPARE(list->currentItem()->text(), QStringLiteral("shared-code"));
-        QVERIFY(!sources->isVisible()); QCOMPARE(controller.passwordLibrary().lists()[0].comments, firstNotes);
-        QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"shared-code", "only-a"})); QVERIFY(!popup.isVisible());
+        QCOMPARE(list->count(), 2); QCOMPARE(trayList->count(), 2);
+        for (const auto& source : controller.passwordLibrary().lists()) QVERIFY(!source.entries.contains("renamed-code"));
+        QCOMPARE(controller.passwordLibrary().enabledPasswords(), QStringList({"only-a"})); QVERIFY(!popup.isVisible());
     }
     void updateControlsSynchronizeAndAreSearchable() {
         QTemporaryDir temporary;

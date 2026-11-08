@@ -26,6 +26,18 @@ QString PreferencesFile() {
 QString ArchiveKey(const std::wstring& path) {
     return QDir::cleanPath(QFileInfo(Q(path)).absoluteFilePath()).toCaseFolded();
 }
+PasswordList& SavedPasswords(QList<PasswordList>& lists, bool enabled) {
+    const QString base = enabled ? QStringLiteral("saved-passwords") : QStringLiteral("disabled-passwords");
+    auto id = base;
+    for (int suffix = 2;; ++suffix) {
+        auto existing = std::find_if(lists.begin(), lists.end(), [&](const auto& list) { return list.id == id; });
+        if (existing == lists.end()) {
+            lists.append({id, QStringLiteral("密码列表"), enabled, {}, {}}); return lists.last();
+        }
+        if (existing->enabled == enabled) return *existing;
+        id = base + '-' + QString::number(suffix);
+    }
+}
 }
 
 ArchiveController::ArchiveController(QObject *parent, const QString& passwordStoragePath) : QObject(parent), passwords_(passwordStoragePath), updates_(this) {
@@ -103,7 +115,7 @@ void ArchiveController::saveWindowGeometry(const QByteArray& geometry) {
 }
 
 bool ArchiveController::savePasswordLists(const QList<PasswordList>& lists) {
-    if (busy()) { setStatus(QStringLiteral("任务结束后可修改密码单")); return false; }
+    if (busy()) { setStatus(QStringLiteral("任务结束后可修改密码")); return false; }
     QString error;
     if (!passwords_.replace(lists, error)) { passwordError_ = error; setStatus(error); emit passwordsChanged(); return false; }
     passwordError_.clear(); passwordMatches_.clear(); emit passwordsChanged(); return true;
@@ -165,6 +177,100 @@ bool ArchiveController::removePasswordList(const QString& id) {
     const auto count = lists.removeIf([&](const auto& list) { return list.id == id; });
     if (!count || !savePasswordLists(lists)) return false;
     setStatus(QStringLiteral("密码单已移除，原始导入文件未更改")); return true;
+}
+
+bool ArchiveController::addPasswords(const QString& text) {
+    if (busy()) { setStatus(QStringLiteral("任务结束后可添加密码")); return false; }
+    QStringList values; QString error;
+    if (!PasswordLibrary::parse(text, values, error)) { setStatus(error); return false; }
+    const auto& active = passwords_.enabledPasswords(); const QSet<QString> enabled(active.cbegin(), active.cend());
+    values.removeIf([&](const auto& value) { return enabled.contains(value); });
+    if (values.isEmpty()) { setStatus(QStringLiteral("这些密码已在列表中")); return true; }
+    const QSet<QString> added(values.cbegin(), values.cend()); QSet<QString> restored;
+    auto lists = passwords_.lists(); QList<PasswordList> separated;
+    // Re-adding a disabled password enables only that value, not its old source list.
+    for (auto& list : lists) {
+        if (list.enabled) continue;
+        QStringList selected;
+        for (const auto& value : list.entries) if (added.contains(value)) { selected.append(value); restored.insert(value); }
+        if (selected.isEmpty()) continue;
+        if (selected.size() == list.entries.size()) { list.enabled = true; continue; }
+        PasswordList enabledList{QUuid::createUuid().toString(QUuid::WithoutBraces), list.name, true, selected, {}};
+        for (const auto& value : selected) if (list.comments.contains(value)) enabledList.comments.insert(value, list.comments.take(value));
+        list.entries.removeIf([&](const auto& value) { return added.contains(value); });
+        separated.append(std::move(enabledList));
+    }
+    lists.append(separated);
+    const auto count = values.size(); values.removeIf([&](const auto& value) { return restored.contains(value); });
+    if (!values.isEmpty()) SavedPasswords(lists, true).entries.append(values);
+    if (!savePasswordLists(lists)) return false;
+    setStatus(QStringLiteral("已保存 %1 个密码").arg(count)); return true;
+}
+
+bool ArchiveController::importPasswords(const QString& path) {
+    if (busy()) { setStatus(QStringLiteral("任务结束后可导入密码")); return false; }
+    QString text, error;
+    if (!PasswordLibrary::readTextFile(path, text, error)) { setStatus(error); return false; }
+    return addPasswords(text);
+}
+
+bool ArchiveController::editPassword(const QString& value, const QString& replacement) {
+    if (busy()) { setStatus(QStringLiteral("任务结束后可编辑密码")); return false; }
+    if (replacement.isEmpty() || replacement.size() > 1024 || replacement.contains(QChar::Null) || replacement.contains('\n') || replacement.contains('\r')) {
+        setStatus(QStringLiteral("密码不能为空或包含换行，最多 1024 个字符")); return false;
+    }
+    auto lists = passwords_.lists(); QList<PasswordList> separated; bool found = false;
+    for (auto& list : lists) {
+        if (!list.entries.contains(value)) continue;
+        found = true;
+        if (value == replacement) continue;
+        const auto note = list.comments.take(value);
+        for (auto& entry : list.entries) if (entry == value) entry = replacement;
+        list.entries.removeDuplicates();
+        if (!note.isEmpty()) {
+            const auto existingNote = list.comments.value(replacement);
+            if (existingNote.isEmpty()) list.comments.insert(replacement, note);
+            else if (existingNote != note) separated.append({QUuid::createUuid().toString(QUuid::WithoutBraces), list.name,
+                list.enabled, {replacement}, {{replacement, note}}});
+        }
+    }
+    if (!found) { setStatus(QStringLiteral("该密码已不存在")); return false; }
+    lists.append(separated);
+    if (!savePasswordLists(lists)) return false;
+    setStatus(QStringLiteral("密码已保存")); return true;
+}
+
+bool ArchiveController::removePasswords(const QStringList& values) {
+    if (busy()) { setStatus(QStringLiteral("任务结束后可删除密码")); return false; }
+    const QSet<QString> selected(values.cbegin(), values.cend()); QSet<QString> removed;
+    auto lists = passwords_.lists();
+    for (auto& list : lists) {
+        list.entries.removeIf([&](const auto& value) { if (!selected.contains(value)) return false; removed.insert(value); return true; });
+        list.comments.removeIf([&](auto it) { return selected.contains(it.key()); });
+    }
+    if (removed.isEmpty()) return false;
+    lists.removeIf([](const auto& list) { return list.entries.isEmpty(); });
+    if (!savePasswordLists(lists)) return false;
+    setStatus(QStringLiteral("已删除 %1 个密码").arg(removed.size())); return true;
+}
+
+bool ArchiveController::setPasswordEnabled(const QString& value, bool enabled) {
+    if (busy()) { setStatus(QStringLiteral("任务结束后可修改密码")); return false; }
+    const auto& entries = passwords_.uniquePasswords();
+    const auto entry = std::find_if(entries.begin(), entries.end(), [&](const auto& item) { return item.value == value; });
+    if (entry == entries.end()) return false;
+    if (entry->enabled == enabled) return true;
+    auto lists = passwords_.lists(); QList<PasswordList> separated;
+    for (auto& list : lists) {
+        if (list.enabled == enabled || !list.entries.contains(value)) continue;
+        if (list.entries.size() == 1) { list.enabled = enabled; continue; }
+        PasswordList single{QUuid::createUuid().toString(QUuid::WithoutBraces), list.name, enabled, {value}, {}};
+        if (list.comments.contains(value)) single.comments.insert(value, list.comments.take(value));
+        list.entries.removeAll(value); separated.append(std::move(single));
+    }
+    lists.append(separated);
+    if (!savePasswordLists(lists)) return false;
+    setStatus(enabled ? QStringLiteral("密码已启用") : QStringLiteral("密码已停用")); return true;
 }
 
 void ArchiveController::addPaths(const QStringList& paths, bool compress) {

@@ -57,6 +57,11 @@ public:
     bool editPasswordList(const QString& id, const QString& name, const QString& text, const QHash<QString, QString>* comments = nullptr);
     bool setPasswordListEnabled(const QString& id, bool enabled);
     bool removePasswordList(const QString& id);
+    bool addPasswords(const QString& text);
+    bool importPasswords(const QString& path);
+    bool editPassword(const QString& value, const QString& replacement);
+    bool removePasswords(const QStringList& values);
+    bool setPasswordEnabled(const QString& value, bool enabled);
     UpdateManager& updates() { return updates_; }
     bool installUpdate();
     int passwordAttempt() const { return passwordAttempt_; }

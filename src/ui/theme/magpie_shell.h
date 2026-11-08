@@ -147,7 +147,7 @@ public:
         children->setObjectName(QStringLiteral("settingsChildren"));
         auto *childRow = new QHBoxLayout(children); childRow->setContentsMargins(0, 0, 0, 0); childRow->setSpacing(4);
         AddItem(childRow, "general", QStringLiteral("常规"), true);
-        AddItem(childRow, "passwords", QStringLiteral("密码单"), true);
+        AddItem(childRow, "passwords", QStringLiteral("密码"), true);
         AddItem(childRow, "about", QStringLiteral("关于"), true);
         header->addWidget(children); header->addStretch();
         search = new QLineEdit; search->setObjectName(QStringLiteral("searchSettings"));

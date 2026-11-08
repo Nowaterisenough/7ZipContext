@@ -32,7 +32,7 @@ QList<PasswordCandidate> BuildPasswordCandidates(const QString& manual, const QL
     QSet<QString> seen;
     QHash<QString, QString> sources;
     if (enabled) for (const auto& list : lists) if (list.enabled) for (const auto& entry : list.entries) {
-        if (!sources.contains(entry)) sources.insert(entry, list.id.startsWith("note:") ? QStringLiteral("随包密码说明") : QStringLiteral("密码单「%1」").arg(list.name));
+        if (!sources.contains(entry)) sources.insert(entry, list.id.startsWith("note:") ? QStringLiteral("随包密码说明") : QStringLiteral("密码列表"));
     }
     auto add = [&](const QString& value, const QString& source) {
         if (!value.isEmpty() && !seen.contains(value)) { seen.insert(value); result.append({value, source}); }

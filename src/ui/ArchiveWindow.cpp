@@ -6,8 +6,6 @@
 #include "theme/layout_metrics.h"
 #include <QApplication>
 #include <QCloseEvent>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDragEnterEvent>
@@ -18,9 +16,6 @@
 #include <QListWidget>
 #include <QMimeData>
 #include <QProgressBar>
-#include <QPlainTextEdit>
-#include <QTableWidget>
-#include <QHeaderView>
 #include <QScreen>
 #include <QScopedValueRollback>
 #include <QScrollArea>
@@ -34,6 +29,7 @@
 #include <QStyleFactory>
 #include <QStyleOptionComboBox>
 #include <QSystemTrayIcon>
+#include <QTimer>
 #include <QWindow>
 #include <dwmapi.h>
 #include <cmath>
@@ -41,8 +37,8 @@
 namespace theme = desktop::theme;
 namespace {
 QString Q(const std::wstring& text) { return QString::fromStdWString(text); }
-enum ItemRole { Detail = Qt::UserRole + 1, Badge, Ink, Path, ListIds, SearchText };
-constexpr int PasswordRowHeight = 44;
+enum ItemRole { Detail = Qt::UserRole + 1, Badge, Ink, Path, PasswordValue, SearchText };
+constexpr int PasswordRowHeight = 36;
 QColor MagpieAccent() { return QColor("#a5b4fc"); }
 
 QString ShellStyle() {
@@ -524,10 +520,11 @@ QWidget* ArchiveWindow::makeTasksPage() {
 
 QWidget* ArchiveWindow::makePasswordsPage() {
     QVBoxLayout* layout; auto* page = Page(layout, "passwordsPage");
-    auto* toolbar = new QHBoxLayout;
+    auto* toolbar = new QHBoxLayout; toolbar->setSpacing(8);
+    auto* input = Edit("passwordInput", QStringLiteral("输入密码，回车添加")); input->setMaxLength(1024);
+    auto* add = Button(QStringLiteral("添加"), "addPasswords", true);
     auto* import = Button(QStringLiteral("导入文件…"), "importPasswords");
-    auto* add = Button(QStringLiteral("添加密码单…"), "addPasswords");
-    toolbar->addWidget(import); toolbar->addWidget(add); toolbar->addStretch(); layout->addLayout(toolbar);
+    toolbar->addWidget(input, 1); toolbar->addWidget(add); toolbar->addWidget(import); layout->addLayout(toolbar);
     passwordSummary_ = Label({}, true); passwordSummary_->setObjectName(QStringLiteral("passwordSummary"));
     layout->addWidget(passwordSummary_);
     passwordError_ = Label({}); passwordError_->setWordWrap(true); passwordError_->setStyleSheet(QStringLiteral("color: #f08078;"));
@@ -536,47 +533,53 @@ QWidget* ArchiveWindow::makePasswordsPage() {
     auto* listCard = new QFrame; listCard->setProperty("statModule", true);
     auto* listLayout = new QVBoxLayout(listCard); listLayout->setContentsMargins(1, 1, 1, 1);
     passwordQueue_ = new QStackedWidget; passwordQueue_->setMinimumHeight(compact_ ? 132 : 164);
-    passwordQueue_->addWidget(Empty(QStringLiteral("暂无密码单")));
+    passwordQueue_->addWidget(Empty(QStringLiteral("暂无保存的密码")));
     passwordLists_ = new RoundedArchiveList; passwordLists_->setObjectName(QStringLiteral("passwordLists"));
-    passwordLists_->setFrameShape(QFrame::NoFrame); passwordLists_->setItemDelegate(new ArchiveDelegate(passwordLists_, true));
-    passwordLists_->setUniformItemSizes(true); passwordLists_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    passwordLists_->setAccessibleName(QStringLiteral("密码列表，双击编辑，勾选启用"));
+    passwordLists_->setFrameShape(QFrame::NoFrame); passwordLists_->setUniformItemSizes(true);
+    passwordLists_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); passwordLists_->setTextElideMode(Qt::ElideMiddle);
+    passwordLists_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    passwordLists_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     passwordQueue_->addWidget(passwordLists_); listLayout->addWidget(passwordQueue_); layout->addWidget(listCard);
     auto* noMatches = Empty(QStringLiteral("没有匹配的密码"));
     noMatches->setObjectName(QStringLiteral("passwordsNoResults")); passwordQueue_->addWidget(noMatches);
-    passwordSourceRow_ = new QWidget;
-    auto* sourceLayout = new QHBoxLayout(passwordSourceRow_); sourceLayout->setContentsMargins(0, 0, 0, 0); sourceLayout->setSpacing(10);
-    sourceLayout->addWidget(Label(QStringLiteral("来源密码单"), true));
-    passwordSource_ = new ComboBox; passwordSource_->setObjectName("passwordListSource"); passwordSource_->setAccessibleName(QStringLiteral("选择要管理的来源密码单"));
-    sourceLayout->addWidget(passwordSource_, 1); layout->addWidget(passwordSourceRow_); passwordSourceRow_->hide();
     auto* actions = new QHBoxLayout;
-    editPasswordList_ = Button(QStringLiteral("编辑密码单…"), "editPasswords");
-    togglePasswordList_ = Button(QStringLiteral("停用密码单"), "togglePasswords");
-    removePasswordList_ = Button(QStringLiteral("移除密码单"), "removePasswords");
-    actions->addWidget(editPasswordList_); actions->addWidget(togglePasswordList_); actions->addStretch(); actions->addWidget(removePasswordList_);
-    layout->addLayout(actions);
+    editPassword_ = Button(QStringLiteral("编辑"), "editPasswords");
+    removePassword_ = Button(QStringLiteral("删除"), "removePasswords");
+    actions->addWidget(editPassword_); actions->addWidget(removePassword_); actions->addStretch();
+    actions->addWidget(Label(QStringLiteral("双击编辑 · 勾选启用"), true)); layout->addLayout(actions);
 
     auto* options = Card();
     autoPasswords_ = Segments("autoPasswords", {QStringLiteral("关闭"), QStringLiteral("开启")});
-    autoPasswords_->setAccessibleName(QStringLiteral("自动使用密码单"));
-    Row(options, QStringLiteral("自动使用密码单"), {}, autoPasswords_, true);
-    autoPasswords_->setToolTip(QStringLiteral("解压和检测时匹配已启用的密码单，手动密码优先"));
-    layout->addWidget(options);
+    autoPasswords_->setAccessibleName(QStringLiteral("自动尝试密码"));
+    Row(options, QStringLiteral("自动尝试密码"), {}, autoPasswords_, true);
+    autoPasswords_->setToolTip(QStringLiteral("解压和检测时尝试列表中勾选的密码，本次密码优先"));
+    layout->addWidget(options); layout->addStretch();
     import->setToolTip(QStringLiteral("每行一个密码，支持 UTF-8、UTF-16 和 GB18030"));
-    layout->addStretch();
-    editable_ << import << add << options;
+    editable_ << input << import << add << options << passwordLists_;
+    const auto save = [this, input] {
+        if (controller_.addPasswords(input->text())) { input->clear(); input->setFocus(); }
+    };
+    connect(add, &QPushButton::clicked, this, save);
+    connect(input, &QLineEdit::returnPressed, this, save);
     connect(import, &QPushButton::clicked, this, &ArchiveWindow::importPasswords);
-    connect(add, &QPushButton::clicked, this, [this] { editPasswords(false); });
-    connect(editPasswordList_, &QPushButton::clicked, this, [this] { editPasswords(true); });
-    connect(passwordLists_, &QListWidget::itemDoubleClicked, this, [this] { editPasswords(true); });
-    connect(passwordLists_, &QListWidget::currentRowChanged, this, &ArchiveWindow::syncPasswordSources);
-    connect(passwordSource_, &QComboBox::currentIndexChanged, this, &ArchiveWindow::syncPasswordActions);
-    connect(togglePasswordList_, &QPushButton::clicked, this, [this] {
-        const auto id = selectedPasswordList();
-        for (const auto& list : controller_.passwordLibrary().lists()) if (list.id == id) {
-            controller_.setPasswordListEnabled(id, !list.enabled); break;
-        }
+    connect(editPassword_, &QPushButton::clicked, this, [this] {
+        if (!controller_.busy() && passwordLists_->currentItem()) passwordLists_->editItem(passwordLists_->currentItem());
     });
-    connect(removePasswordList_, &QPushButton::clicked, this, [this] { controller_.removePasswordList(selectedPasswordList()); });
+    connect(removePassword_, &QPushButton::clicked, this, &ArchiveWindow::removeSelectedPasswords);
+    auto* remove = new QShortcut(QKeySequence(Qt::Key_Delete), passwordLists_); remove->setContext(Qt::WidgetShortcut);
+    connect(remove, &QShortcut::activated, this, &ArchiveWindow::removeSelectedPasswords);
+    connect(passwordLists_, &QListWidget::itemSelectionChanged, this, &ArchiveWindow::syncPasswordActions);
+    connect(passwordLists_, &QListWidget::itemChanged, this, [this](QListWidgetItem* item) {
+        const auto original = item->data(PasswordValue).toString(), replacement = item->text();
+        const bool enabled = item->checkState() == Qt::Checked;
+        // Close the inline editor before a controller notification rebuilds both windows' lists.
+        QTimer::singleShot(0, this, [this, original, replacement, enabled] {
+            const bool saved = original == replacement ? controller_.setPasswordEnabled(original, enabled)
+                : controller_.editPassword(original, replacement);
+            if (!saved) refreshPasswords();
+        });
+    });
     connect(autoPasswords_, &QTabBar::currentChanged, this, [this](int index) {
         if (synchronizing_) return;
         controller_.autoPasswords = index == 1; controller_.savePreferences(); controller_.notifyOptions();
@@ -584,154 +587,59 @@ QWidget* ArchiveWindow::makePasswordsPage() {
     return page;
 }
 
-QString ArchiveWindow::selectedPasswordList() const {
-    return passwordSource_ ? passwordSource_->currentData().toString() : QString{};
-}
-void ArchiveWindow::syncPasswordSources() {
-    const auto previous = selectedPasswordList();
-    const auto ids = passwordLists_->currentItem() ? passwordLists_->currentItem()->data(ListIds).toStringList() : QStringList{};
-    const QSet<QString> sourceIds(ids.cbegin(), ids.cend());
-    {
-        const QSignalBlocker blocker(passwordSource_); passwordSource_->clear();
-        int firstEnabled = -1;
-        for (const auto& list : controller_.passwordLibrary().lists()) if (sourceIds.contains(list.id)) {
-            passwordSource_->addItem(list.name + (list.enabled ? QStringLiteral(" · 已启用") : QStringLiteral(" · 已停用")), list.id);
-            if (list.enabled && firstEnabled < 0) firstEnabled = passwordSource_->count() - 1;
-        }
-        const int retained = passwordSource_->findData(previous);
-        if (retained >= 0) passwordSource_->setCurrentIndex(retained);
-        else if (firstEnabled >= 0) passwordSource_->setCurrentIndex(firstEnabled);
-    }
-    passwordSourceRow_->setVisible(ids.size() > 1);
-    syncPasswordActions();
-}
 void ArchiveWindow::syncPasswordActions() {
-    const auto id = selectedPasswordList();
-    const auto& lists = controller_.passwordLibrary().lists();
-    auto selected = std::find_if(lists.begin(), lists.end(), [&](const auto& list) { return list.id == id; });
-    const bool enabled = !controller_.busy() && selected != lists.end();
-    editPasswordList_->setEnabled(enabled); togglePasswordList_->setEnabled(enabled); removePasswordList_->setEnabled(enabled);
-    togglePasswordList_->setText(selected != lists.end() && !selected->enabled ? QStringLiteral("启用密码单") : QStringLiteral("停用密码单"));
-    togglePasswordList_->setToolTip(QStringLiteral("仅修改所选来源密码单；其他已启用来源仍可提供相同密码"));
+    const auto selected = passwordLists_->selectedItems();
+    const bool idle = !controller_.busy();
+    editPassword_->setEnabled(idle && selected.size() == 1 && !selected.first()->isHidden());
+    removePassword_->setEnabled(idle && std::any_of(selected.begin(), selected.end(), [](const auto* item) { return !item->isHidden(); }));
 }
+
 void ArchiveWindow::refreshPasswords() {
-    const auto id = selectedPasswordList();
     const auto selectedValue = passwordLists_->currentItem() ? passwordLists_->currentItem()->text() : QString{};
-    passwordLists_->clear();
-    int selectedByValue = -1, selectedByList = -1;
+    const int previousRow = passwordLists_->currentRow();
+    const QSignalBlocker blocker(passwordLists_); passwordLists_->clear();
+    int selected = -1;
     const auto& library = controller_.passwordLibrary();
     for (const auto& entry : library.uniquePasswords()) {
-        QStringList ids, names, notes, descriptions;
-        QSet<QString> seenNames, seenNotes;
-        for (const auto& source : entry.sources) {
-            ids.append(source.listId);
-            if (!seenNames.contains(source.name)) { seenNames.insert(source.name); names.append(source.name); }
-            if (!source.comment.isEmpty() && !seenNotes.contains(source.comment)) { seenNotes.insert(source.comment); notes.append(source.comment); }
-            descriptions.append(QStringLiteral("来源：%1 · %2%3").arg(source.name,
-                source.enabled ? QStringLiteral("已启用") : QStringLiteral("已停用"), source.comment.isEmpty() ? QString{} : '\n' + source.comment));
-        }
-        const auto description = (notes.isEmpty() ? QString{} : notes.join(QStringLiteral("；")) + QStringLiteral(" · ")) +
-            QStringLiteral("来源：%1 · %2").arg(names.join(QStringLiteral("、")), entry.enabled ? QStringLiteral("已启用") : QStringLiteral("已停用"));
-        AddItem(passwordLists_, entry.value, description, {},
-                entry.enabled ? QColor(theme::Success) : theme::MutedColor(this), {});
-        const int row = passwordLists_->count() - 1; auto* item = passwordLists_->item(row);
-        const auto complete = entry.value + '\n' + descriptions.join('\n');
-        item->setData(ListIds, ids); item->setData(SearchText, complete);
-        item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(complete.toHtmlEscaped()));
-        if (ids.contains(id) && selectedByList < 0) selectedByList = row;
-        if (entry.value == selectedValue) selectedByValue = row;
+        auto* item = new QListWidgetItem(entry.value, passwordLists_);
+        item->setFlags(item->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+        item->setCheckState(entry.enabled ? Qt::Checked : Qt::Unchecked);
+        item->setSizeHint(QSize(200, PasswordRowHeight));
+        item->setData(PasswordValue, entry.value); item->setData(SearchText, entry.value);
+        item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(entry.value.toHtmlEscaped()));
+        item->setData(Qt::AccessibleDescriptionRole, entry.enabled ? QStringLiteral("已启用") : QStringLiteral("已停用"));
+        if (entry.value == selectedValue) selected = passwordLists_->count() - 1;
     }
-    int selected = selectedByValue >= 0 ? selectedByValue : selectedByList;
-    if (selected < 0 && passwordLists_->count()) selected = 0;
+    if (selected < 0 && passwordLists_->count()) selected = std::clamp(previousRow, 0, passwordLists_->count() - 1);
     passwordLists_->setCurrentRow(selected);
-    const int previousSource = passwordSource_->findData(id);
-    if (previousSource >= 0) passwordSource_->setCurrentIndex(previousSource);
     passwordQueue_->setCurrentIndex(passwordLists_->count() ? 1 : 0);
-    const int height = passwordLists_->count() ? std::min(passwordLists_->count(), compact_ ? 3 : 5) * PasswordRowHeight : compact_ ? 132 : 164;
-    passwordQueue_->setFixedHeight(height);
-    passwordQueue_->parentWidget()->setFixedHeight(height + 2);
-    passwordSummary_->setText(QStringLiteral("共 %1 个密码 · %2 份密码单 · 已启用 %3 个").arg(library.uniquePasswords().size()).arg(library.lists().size()).arg(library.enabledPasswords().size()));
-    passwordSummary_->setVisible(!library.lists().isEmpty());
+    const int height = passwordLists_->count() ? std::max(compact_ ? 132 : 164, std::min(passwordLists_->count(), compact_ ? 6 : 10) * PasswordRowHeight) : compact_ ? 132 : 164;
+    passwordQueue_->setFixedHeight(height); passwordQueue_->parentWidget()->setFixedHeight(height + 2);
+    passwordSummary_->setText(QStringLiteral("共 %1 个密码 · 已启用 %2 个").arg(library.uniquePasswords().size()).arg(library.enabledPasswords().size()));
     passwordError_->setText(controller_.passwordLibraryError()); passwordError_->setVisible(!controller_.passwordLibraryError().isEmpty());
-    syncPasswordActions(); if (page_ == "passwords") filterSettings();
+    if (page_ == "passwords") filterSettings();
+    syncPasswordActions();
 }
+
+void ArchiveWindow::removeSelectedPasswords() {
+    if (controller_.busy()) return;
+    QStringList values;
+    for (const auto* item : passwordLists_->selectedItems()) if (!item->isHidden()) values.append(item->data(PasswordValue).toString());
+    controller_.removePasswords(values);
+}
+
 void ArchiveWindow::importPasswords() {
     if (controller_.busy()) return;
     QScopedValueRollback<bool> modal(dialogOpen_, true);
-    const auto files = QFileDialog::getOpenFileNames(this, QStringLiteral("导入密码单"), {}, QStringLiteral("密码单文本 (*.txt *.lst *.list *.dic);;所有文件 (*)"));
+    const auto files = QFileDialog::getOpenFileNames(this, QStringLiteral("导入密码"), {}, QStringLiteral("密码文本 (*.txt *.lst *.list *.dic);;所有文件 (*)"));
     if (files.isEmpty()) return;
     int imported = 0; QString lastError;
     for (const auto& file : files) {
-        if (controller_.importPasswordList(file)) ++imported;
+        if (controller_.importPasswords(file)) ++imported;
         else lastError = controller_.status();
     }
-    controller_.setStatus(lastError.isEmpty() ? QStringLiteral("已导入 %1 份密码单").arg(imported)
-        : QStringLiteral("已导入 %1 份，%2 份失败：%3").arg(imported).arg(files.size() - imported).arg(lastError));
-    if (compact_) { raise(); activateWindow(); }
-}
-void ArchiveWindow::editPasswords(bool existing) {
-    if (controller_.busy()) return;
-    const auto id = existing ? selectedPasswordList() : QString{};
-    QString name; QStringList values; QHash<QString, QString> notes;
-    if (existing) {
-        const auto& lists = controller_.passwordLibrary().lists();
-        auto list = std::find_if(lists.begin(), lists.end(), [&](const auto& item) { return item.id == id; });
-        if (list == lists.end()) return;
-        name = list->name; values = list->entries; notes = list->comments;
-    }
-    QScopedValueRollback<bool> modal(dialogOpen_, true);
-    QDialog dialog(this); dialog.setObjectName(QStringLiteral("passwordListEditor"));
-    dialog.setWindowTitle(existing ? QStringLiteral("编辑密码单") : QStringLiteral("添加密码单"));
-    dialog.setWindowModality(Qt::ApplicationModal); dialog.resize(600, 460);
-    auto* layout = new QVBoxLayout(&dialog); layout->setContentsMargins(20, 18, 20, 18); layout->setSpacing(12);
-    layout->addWidget(Label(QStringLiteral("名称"), false, true));
-    auto* title = Edit("passwordListName", QStringLiteral("例如：常用密码")); title->setMaxLength(120); title->setText(name); layout->addWidget(title);
-    auto* entries = new QTableWidget(std::max(1, static_cast<int>(values.size())), 2); entries->setObjectName(QStringLiteral("passwordListEntries"));
-    entries->setAccessibleName(QStringLiteral("密码和注释")); entries->setHorizontalHeaderLabels({QStringLiteral("密码"), QStringLiteral("注释（可选）")});
-    entries->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch); entries->verticalHeader()->setDefaultSectionSize(34);
-    entries->setSelectionBehavior(QAbstractItemView::SelectRows); entries->setShowGrid(false);
-    for (int row = 0; row < entries->rowCount(); ++row) {
-        entries->setItem(row, 0, new QTableWidgetItem(values.value(row)));
-        entries->setItem(row, 1, new QTableWidgetItem(notes.value(values.value(row))));
-    }
-    layout->addWidget(entries, 1);
-    auto* rowActions = new QHBoxLayout;
-    auto* addRow = Button(QStringLiteral("添加一行"), "addPasswordRow"); auto* removeRow = Button(QStringLiteral("删除所选行"), "removePasswordRow");
-    rowActions->addWidget(addRow); rowActions->addWidget(removeRow); rowActions->addStretch(); layout->addLayout(rowActions);
-    connect(addRow, &QPushButton::clicked, &dialog, [entries] {
-        const auto row = entries->rowCount(); entries->insertRow(row);
-        entries->setItem(row, 0, new QTableWidgetItem); entries->setItem(row, 1, new QTableWidgetItem); entries->setCurrentCell(row, 0); entries->editItem(entries->item(row, 0));
-    });
-    connect(removeRow, &QPushButton::clicked, &dialog, [entries] {
-        const auto selected = entries->selectionModel()->selectedRows();
-        QList<int> rows; for (const auto& row : selected) rows.append(row.row()); std::sort(rows.begin(), rows.end(), std::greater<int>());
-        for (const auto row : rows) entries->removeRow(row);
-    });
-    auto* error = Label({}); error->setWordWrap(true); error->setStyleSheet(QStringLiteral("color: #f08078;")); error->hide(); layout->addWidget(error);
-    auto* buttons = new QHBoxLayout; buttons->addStretch();
-    auto* cancel = Button(QStringLiteral("取消"), "cancelPasswordEditor");
-    auto* save = Button(QStringLiteral("保存"), "savePasswordEditor", true); save->setDefault(true);
-    buttons->addWidget(cancel); buttons->addWidget(save); layout->addLayout(buttons);
-    connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
-    connect(save, &QPushButton::clicked, &dialog, [&] {
-        QStringList passwords; QHash<QString, QString> comments;
-        for (int row = 0; row < entries->rowCount(); ++row) {
-            const auto value = entries->item(row, 0) ? entries->item(row, 0)->text() : QString{};
-            const auto note = entries->item(row, 1) ? entries->item(row, 1)->text() : QString{};
-            if (value.isEmpty() && note.isEmpty()) continue;
-            if (value.isEmpty() || value.contains('\n') || value.contains('\r') || (comments.contains(value) && comments.value(value) != note)) {
-                error->setText(QStringLiteral("请检查空密码、换行或注释不同的重复密码")); error->show(); return;
-            }
-            passwords.append(value); comments.insert(value, note);
-        }
-        const bool ok = existing ? controller_.editPasswordList(id, title->text(), passwords.join('\n'), &comments)
-                                 : controller_.addPasswordList(title->text(), passwords.join('\n'), &comments);
-        if (ok) dialog.accept(); else { error->setText(controller_.status()); error->show(); }
-    });
-    if (QGuiApplication::platformName() == "windows") {
-        BOOL dark = TRUE; auto handle = reinterpret_cast<HWND>(dialog.winId()); DwmSetWindowAttribute(handle, 20, &dark, sizeof(dark));
-    }
-    dialog.exec();
+    controller_.setStatus(lastError.isEmpty() ? QStringLiteral("已导入 %1 个密码文件，重复密码已合并").arg(imported)
+        : QStringLiteral("已导入 %1 个文件，%2 个失败：%3").arg(imported).arg(files.size() - imported).arg(lastError));
     if (compact_) { raise(); activateWindow(); }
 }
 
@@ -751,8 +659,8 @@ QWidget* ArchiveWindow::makeSettingsPage(bool about) {
         rememberGeometry_->setAccessibleName(QStringLiteral("记住窗口尺寸"));
         Row(card, QStringLiteral("记住窗口大小和位置"), {}, rememberGeometry_);
         auto* passwords = Button(QStringLiteral("管理…"), "managePasswordLists");
-        Row(card, QStringLiteral("密码单"), {}, passwords, true);
-        passwords->setToolTip(QStringLiteral("密码单按 Windows 账户加密保存；手动密码不保存"));
+        Row(card, QStringLiteral("密码列表"), {}, passwords, true);
+        passwords->setToolTip(QStringLiteral("保存的密码按 Windows 账户加密；本次密码不保存"));
         connect(passwords, &QPushButton::clicked, this, [this] { navigate(QStringLiteral("passwords")); });
         connect(hideOnBlur_, &QTabBar::currentChanged, this, [this](int index) { if (synchronizing_) return; controller_.hideOnBlur = index == 1; controller_.savePreferences(); controller_.notifyOptions(); });
         connect(rememberGeometry_, &QTabBar::currentChanged, this, [this](int index) { if (synchronizing_) return; controller_.rememberGeometry = index == 1; controller_.savePreferences(); controller_.notifyOptions(); });
@@ -794,7 +702,7 @@ void ArchiveWindow::navigate(const QString& requested) {
     const int index = pages.indexOf(page); if (index < 0) return;
     if ((page_ == "passwords") != (page == "passwords")) shell_->search->clear();
     page_ = page; shell_->Select(page); shell_->pages->setCurrentIndex(index);
-    shell_->search->setPlaceholderText(page == "passwords" ? QStringLiteral("查找密码和注释") : QStringLiteral("查找设置"));
+    shell_->search->setPlaceholderText(page == "passwords" ? QStringLiteral("查找密码") : QStringLiteral("查找设置"));
     shell_->search->setAccessibleName(shell_->search->placeholderText());
     syncStatus();
     filterSettings();

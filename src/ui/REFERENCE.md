@@ -38,9 +38,11 @@ The reference's palette, row/card properties, 280 ms selection movement,
 feedback and easing curve are shared by the main window and tray popup.
 Pages and input controls live for the lifetime of their window. Navigation
 only selects an existing QStackedWidget page; it does not recreate controls.
-The password-list manager uses the same settings tabs, card rows, list delegate,
-typography and segmented choices as the existing pages. Its page stays alive alongside
-the other five pages in both windows. The native preview runner seeds an isolated temporary library.
+The password manager uses the same settings tabs, cards, typography and segmented
+choices as the existing pages. Passwords appear in a single-line editable checklist;
+the previous list names, source selector and multi-column editor are not shown.
+Its page stays alive alongside the other five pages in both windows. The native
+preview runner seeds an isolated temporary library, including duplicate legacy entries.
 The extraction page's nested-extraction and media-organization choices reuse
 the existing settings-row typography and segmented control, and share their state between
 both windows. Media organization selects independent output directories and
