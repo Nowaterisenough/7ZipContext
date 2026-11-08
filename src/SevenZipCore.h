@@ -71,6 +71,8 @@ public:
 
     // Also true if the last OpenArchive failed while requesting an encrypted header password.
     bool NeedsPassword() const { return m_needsPassword; }
+    // Missing data and unsupported codecs cannot be fixed by trying another password.
+    bool CanRetryPassword() const { return m_needsPassword && !m_passwordIndependentFailure; }
 
     // Test if a password is correct (tries to extract first file)
     bool TestPassword(const std::wstring& password);
@@ -121,6 +123,7 @@ private:
     IInStream* m_inStream = nullptr;
     std::wstring m_currentPath;
     bool m_needsPassword = false;
+    bool m_passwordIndependentFailure = false;
     std::wstring m_error;
 
     // Supported formats

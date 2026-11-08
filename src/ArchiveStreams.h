@@ -71,7 +71,7 @@ class COpenCallback final : public IArchiveOpenCallback, public IArchiveOpenVolu
     UInt64 total = 0;
 public:
     bool passwordRequested = false;
-    bool missingVolume = false;
+    std::wstring missingVolumeName;
     COpenCallback(const std::wstring& file, const std::wstring& password, ProgressCallback callback,
                   const std::vector<std::wstring>& files, const std::wstring& name,
                   const std::vector<std::pair<std::wstring,std::wstring>>& aliases)
@@ -114,7 +114,7 @@ public:
         auto resolved = path.parent_path() / relative;
         if (!volumeAliases.empty()) {
             const auto alias = std::find_if(volumeAliases.begin(), volumeAliases.end(), [&](const auto& entry) { return _wcsicmp(entry.first.c_str(), name) == 0; });
-            if (alias == volumeAliases.end()) { missingVolume = true; return S_FALSE; }
+            if (alias == volumeAliases.end()) { missingVolumeName = name; return S_FALSE; }
             resolved = alias->second;
         } else {
             for (const auto& volume : volumes) {
@@ -124,7 +124,7 @@ public:
         auto stream = new CFullInFileStream;
         stream->AddRef();
         if (!stream->Open(resolved.c_str())) {
-            missingVolume = true;
+            missingVolumeName = name;
             stream->Release(); return S_FALSE;
         }
         *out = stream; return S_OK;

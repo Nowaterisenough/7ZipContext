@@ -177,6 +177,19 @@ private slots:
         const auto invalid = ResolveArchivePassword(core, invalidPath.toStdWString(), {{"guess", "list"}}, {});
         QCOMPARE(invalid.state, ArchivePasswordResult::State::Invalid); QCOMPARE(invalid.attempts, 0);
     }
+    void unsupportedEncryptedCodecDoesNotExhaustPasswordList() {
+        QTemporaryDir temp;
+        const auto archive = MakeArchive(temp.path(), "unsupported", "zip", "secret"); QVERIFY(!archive.isEmpty());
+        auto bytes = Read(archive); const auto aes = QByteArray::fromHex("01990700"); int changed = 0;
+        for (qsizetype at = bytes.indexOf(aes); at >= 0; at = bytes.indexOf(aes, at + 11)) {
+            QVERIFY(at + 11 <= bytes.size()); bytes[at + 9] = char(0xff); bytes[at + 10] = char(0xff); ++changed;
+        }
+        QCOMPARE(changed, 2); QVERIFY(Write(archive, bytes));
+        SevenZipCore core;
+        const auto result = ResolveArchivePassword(core, archive.toStdWString(), {{"wrong", "list"}, {"secret", "list"}}, {});
+        QCOMPARE(result.state, ArchivePasswordResult::State::Invalid); QCOMPARE(result.attempts, 0);
+        QVERIFY(result.error.contains(QStringLiteral("不支持"))); QVERIFY(!core.IsOpen());
+    }
     void controllerAutomaticallyExtractsAndRemembersMatches() {
         QTemporaryDir temporary;
         const QString password = QStringLiteral("controller-test-password");
@@ -227,6 +240,22 @@ private slots:
         SevenZipCore core;
         const auto result = ResolveArchivePassword(core, archive.toStdWString(), {{"wrong", "rar-list"}, {"test-secret", "rar-list"}}, {});
         QCOMPARE(result.state, ArchivePasswordResult::State::Ready); QCOMPARE(result.attempts, 2); QVERIFY(result.verified);
+        core.CloseArchive(); QTemporaryDir temp;
+        const auto fixtures = QFileInfo(archive).dir();
+        const auto parts = fixtures.entryList({"sample.part*.rar"}, QDir::Files, QDir::Name); QVERIFY(parts.size() > 2);
+        QStringList renamed;
+        for (int i = 0; i < parts.size(); ++i) {
+            const auto path = temp.filePath(QString("p.%1.pdf").arg(i + 1, 3, 10, QChar('0')));
+            QVERIFY(QFile::copy(fixtures.filePath(parts[i]), path)); renamed << path;
+        }
+        const auto disguised = ResolveArchivePassword(core, renamed.last().toStdWString(), {{"wrong", "rar-list"}, {"test-secret", "rar-list"}}, {});
+        QCOMPARE(disguised.state, ArchivePasswordResult::State::Ready); QCOMPARE(disguised.attempts, 2); QVERIFY(disguised.verified);
+        QVERIFY(core.Extract(temp.filePath("out").toStdWString(), L"test-secret"));
+        QCOMPARE(Read(temp.filePath("out/payload.bin")), Read(fixtures.filePath("payload.bin"))); core.CloseArchive();
+        QVERIFY(QFile::remove(renamed.last()));
+        const auto missing = ResolveArchivePassword(core, renamed.first().toStdWString(), {{"test-secret", "rar-list"}, {"unused", "rar-list"}}, {});
+        QCOMPARE(missing.state, ArchivePasswordResult::State::Invalid); QCOMPARE(missing.attempts, 1);
+        QVERIFY(missing.error.contains(QStringLiteral("分卷"))); QVERIFY(!core.IsOpen());
     }
 };
 QTEST_MAIN(PasswordTests)

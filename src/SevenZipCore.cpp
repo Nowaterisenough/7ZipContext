@@ -166,6 +166,7 @@ public:
     bool WasPasswordRequested() const { return m_passwordWasRequested; }
     bool Succeeded() const { return m_success; }
     const std::wstring& OutputError() const { return m_outputError; }
+    const std::wstring& StructuralError() const { return m_structuralError; }
 
     // IUnknown
     STDMETHOD(QueryInterface)(REFIID iid, void **outObject) noexcept {
@@ -287,6 +288,10 @@ public:
 
     STDMETHOD(SetOperationResult)(Int32 opRes) noexcept {
         if (opRes != NArchive::NExtract::NOperationResult::kOK) m_success = false;
+        using namespace NArchive::NExtract::NOperationResult;
+        if (opRes == kUnsupportedMethod) m_structuralError = L"压缩包使用了不支持的压缩或加密算法";
+        else if (opRes == kUnavailable || opRes == kUnexpectedEnd) m_structuralError = L"压缩数据不完整：请检查是否缺少分卷或文件尚未下载完成";
+        else if (opRes == kDataAfterEnd || opRes == kIsNotArc || opRes == kHeadersError) m_structuralError = L"压缩数据结构损坏，请检查文件及分卷是否完整";
         return S_OK;
     }
 
@@ -307,6 +312,7 @@ private:
     bool m_passwordWasRequested;
     bool m_success = true;
     std::wstring m_outputError;
+    std::wstring m_structuralError;
     ULONG m_refCount;
 };
 
@@ -905,6 +911,7 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
         if (!detected || format.classId != *detected) candidates.push_back(format.classId);
     }
     bool requestedPassword = false;
+    std::wstring missingVolume;
     for (const auto& id : candidates) {
         auto archive = CreateInArchive(id);
         if (!archive) continue;
@@ -913,6 +920,7 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
         UInt64 maxCheck = 1 << 22;
         HRESULT result = archive->Open(m_inStream, &maxCheck, callback);
         requestedPassword = requestedPassword || callback->passwordRequested;
+        if (result == S_OK || !detected || id == *detected) missingVolume = callback->missingVolumeName;
         callback->Release();
         // S_FALSE means the handler did not recognize this archive.
         if (result == S_OK) { m_archive = archive; break; }
@@ -922,8 +930,9 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
     }
     if (!m_archive) {
         CloseArchive();
-        m_needsPassword = requestedPassword;
-        m_error = requestedPassword ? L"无法打开加密文件头，请检查密码" : L"无法打开：文件损坏、分卷不完整或格式不支持";
+        m_needsPassword = requestedPassword && missingVolume.empty();
+        m_error = !missingVolume.empty() ? L"缺少或无法读取分卷：" + missingVolume
+            : requestedPassword ? L"无法打开加密文件头，请检查密码" : L"无法打开：文件损坏、分卷不完整或格式不支持";
         return false;
     }
     PROPVARIANT diagnostics{};
@@ -934,7 +943,7 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
     incomplete = incomplete || (diagnostics.vt == VT_UI4 && diagnostics.ulVal != 0);
     PropVariantClear(&diagnostics);
     if (incomplete) {
-        CloseArchive(); m_error = L"压缩包不完整：存在缺卷或文件头损坏"; return false;
+        CloseArchive(); m_error = missingVolume.empty() ? L"压缩包不完整：存在缺卷或文件头损坏" : L"缺少或无法读取分卷：" + missingVolume; return false;
     }
     // A complete archive can open successfully while ignoring unrelated trailing "parts".
     // Never report those files as consumed (nested cleanup would then remove them).
@@ -979,6 +988,7 @@ void SevenZipCore::CloseArchive() {
     }
     m_currentPath.clear();
     m_needsPassword = false;
+    m_passwordIndependentFailure = false;
 }
 
 uint32_t SevenZipCore::GetItemCount() {
@@ -1055,8 +1065,10 @@ bool SevenZipCore::TestArchive(const std::wstring& password, ProgressCallback pr
     callback->AddRef();
     HRESULT hr = m_archive->Extract(nullptr, static_cast<UInt32>(-1), 1, callback);
     const bool success = hr == S_OK && callback->Succeeded();
+    const auto structuralError = callback->StructuralError();
+    m_passwordIndependentFailure = !structuralError.empty();
     callback->Release();
-    if (!success) m_error = hr == E_ABORT ? L"已取消" : L"校验失败：密码错误、数据损坏或缺少分卷";
+    if (!success) m_error = hr == E_ABORT ? L"已取消" : !structuralError.empty() ? structuralError : L"校验失败：密码错误、数据损坏或缺少分卷";
     return success;
 }
 

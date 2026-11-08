@@ -57,23 +57,28 @@ ArchivePasswordResult ResolveArchivePassword(SevenZipCore& core, const ArchivePl
         core.CloseArchive(); result.state = ArchivePasswordResult::State::Cancelled;
         result.error = QStringLiteral("已取消"); return result;
     };
+    auto invalid = [&] {
+        result.error = QString::fromStdWString(core.LastError()); core.CloseArchive(); return result;
+    };
     if (!alive()) return cancelled();
     const bool opened = core.OpenArchive(plan, L"", progress);
     if (!alive()) return cancelled();
     if (!opened && !core.NeedsPassword()) {
-        result.error = QString::fromStdWString(core.LastError()); return result;
+        return invalid();
     }
     if (opened && !core.NeedsPassword()) { result.state = ArchivePasswordResult::State::Ready; return result; }
     if (opened && core.TestArchive(L"", progress)) {
         result.state = ArchivePasswordResult::State::Ready; result.verified = true; return result;
     }
+    if (!alive()) return cancelled();
+    if (opened && !core.CanRetryPassword()) return invalid();
     for (const auto& candidate : candidates) {
         if (!alive()) return cancelled();
         ++result.attempts;
         if (attempting) attempting(result.attempts, static_cast<int>(candidates.size()));
         if (!core.OpenArchive(plan, candidate.value.toStdWString(), progress)) {
             if (!alive()) return cancelled();
-            if (!core.NeedsPassword()) { result.error = QString::fromStdWString(core.LastError()); return result; }
+            if (!core.NeedsPassword()) return invalid();
             continue;
         }
         if (core.TestArchive(candidate.value.toStdWString(), progress)) {
@@ -82,6 +87,8 @@ ArchivePasswordResult ResolveArchivePassword(SevenZipCore& core, const ArchivePl
             result.password = candidate.value; result.source = candidate.source; result.verified = true;
             return result;
         }
+        if (!alive()) return cancelled();
+        if (!core.CanRetryPassword()) return invalid();
     }
     if (!alive()) return cancelled();
     core.CloseArchive(); result.state = ArchivePasswordResult::State::NoMatch;
