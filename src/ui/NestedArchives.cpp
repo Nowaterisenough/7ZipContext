@@ -91,10 +91,11 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
             }
             result.archives.push_back(std::move(plan));
         };
-        if (group.key().startsWith("part:")) {
+        if (group.key().startsWith("part:") || group.key().startsWith("numeric:")) {
             std::vector<std::wstring> paths;
             for (const auto& path : group.value()) paths.push_back(path.toStdWString());
-            for (const auto& bundle : GroupNamedArchiveParts(paths)) inspectBundle(bundle);
+            const auto bundles = group.key().startsWith("numeric:") ? GroupNumericArchiveParts(paths) : GroupNamedArchiveParts(paths);
+            for (const auto& bundle : bundles) inspectBundle(bundle);
             continue;
         }
         bool duplicate = false; QSet<QString> names;

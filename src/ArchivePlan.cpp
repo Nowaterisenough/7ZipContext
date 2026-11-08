@@ -34,6 +34,48 @@ bool ParsePart(const std::wstring& name, NamedPart& part) {
              std::all_of(part.suffix.begin() + 1, part.suffix.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }));
 }
 
+struct IndexedPart { unsigned index; std::wstring path; };
+std::vector<std::vector<std::wstring>> GroupPartDirectories(const std::vector<IndexedPart>& entries) {
+    struct Directory {
+        std::map<std::wstring, Directory> children;
+        std::vector<IndexedPart> files;
+    } root;
+    std::set<std::wstring> seenPaths;
+    for (const auto& entry : entries) {
+        const auto absolute = fs::absolute(entry.path).lexically_normal();
+        if (!seenPaths.insert(Lower(absolute.wstring())).second) continue;
+        auto* directory = &root;
+        for (const auto& component : absolute.parent_path()) directory = &directory->children[Lower(component.wstring())];
+        directory->files.push_back(entry);
+    }
+    // Merge siblings only while each volume number has one candidate. A conflict
+    // at an ancestor keeps the already grouped descendant bundles independent.
+    // This preserves both A/part1 + A/part2 and B/{001,002} when scanning their parent.
+    const auto collect = [](auto&& self, const Directory& directory) -> std::vector<std::vector<IndexedPart>> {
+        std::vector<std::vector<IndexedPart>> bundles;
+        if (!directory.files.empty()) bundles.push_back(directory.files);
+        for (const auto& [name, child] : directory.children) {
+            auto children = self(self, child);
+            for (auto& bundle : children) bundles.push_back(std::move(bundle));
+        }
+        if (bundles.size() < 2) return bundles;
+        std::set<unsigned> indices;
+        for (const auto& bundle : bundles) for (const auto& file : bundle) {
+            if (!indices.insert(file.index).second) return bundles;
+        }
+        std::vector<IndexedPart> merged;
+        for (auto& bundle : bundles) for (auto& file : bundle) merged.push_back(std::move(file));
+        return {std::move(merged)};
+    };
+    std::vector<std::vector<std::wstring>> result;
+    for (const auto& bundle : collect(collect, root)) {
+        std::vector<std::wstring> files;
+        for (const auto& file : bundle) files.push_back(file.path);
+        result.push_back(std::move(files));
+    }
+    return result;
+}
+
 // Native RAR repeats its marker on every volume; a byte-split 7z/ZIP generally has only one header.
 int RarVersion(const unsigned char* data, size_t count) {
     constexpr unsigned char marker[]{'R', 'a', 'r', '!', 0x1a, 0x07};
@@ -278,8 +320,21 @@ std::optional<NumericArchivePart> ParseNumericArchivePart(const std::wstring& fi
     return part(numberDot, *number, true);
 }
 
+std::vector<std::vector<std::wstring>> GroupNumericArchiveParts(const std::vector<std::wstring>& paths) {
+    std::map<std::wstring, std::vector<IndexedPart>> families;
+    for (const auto& path : paths) {
+        const auto part = ParseNumericArchivePart(Lower(fs::path(path).filename().wstring()));
+        if (part) families[part->base].push_back({part->index, path});
+    }
+    std::vector<std::vector<std::wstring>> groups;
+    for (const auto& [base, entries] : families) {
+        for (auto& bundle : GroupPartDirectories(entries)) groups.push_back(std::move(bundle));
+    }
+    return groups;
+}
+
 std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<std::wstring>& paths) {
-    struct Entry { NamedPart part; std::wstring path, directory; };
+    struct Entry { NamedPart part; std::wstring path; };
     std::map<std::pair<std::wstring, int>, std::vector<Entry>> families;
     for (const auto& path : paths) {
         const auto file = fs::path(path).lexically_normal();
@@ -289,19 +344,16 @@ std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<
         std::array<unsigned char, 8> head{};
         stream.read(reinterpret_cast<char*>(head.data()), head.size());
         families[{part.prefix, RarVersion(head.data(), static_cast<size_t>(stream.gcount()))}].push_back(
-            {part, path, Lower(file.parent_path().wstring())});
+            {part, path});
     }
     std::vector<std::vector<std::wstring>> groups;
     for (const auto& [family, entries] : families) {
-        std::map<unsigned, std::wstring> locations;
-        bool separateFolders = false;
-        for (const auto& e : entries) {
-            const auto [it, added] = locations.emplace(e.part.index(), e.directory);
-            if (!added && it->second != e.directory) separateFolders = true;
-        }
-        std::map<std::wstring, std::vector<const Entry*>> folders;
-        for (const auto& e : entries) folders[separateFolders ? e.directory : L""].push_back(&e);
-        for (const auto& [directory, bundle] : folders) {
+        std::vector<IndexedPart> indexed;
+        std::map<std::wstring, const Entry*> byPath;
+        for (const auto& entry : entries) { indexed.push_back({entry.part.index(), entry.path}); byPath[entry.path] = &entry; }
+        for (const auto& paths : GroupPartDirectories(indexed)) {
+            std::vector<const Entry*> bundle;
+            for (const auto& path : paths) bundle.push_back(byPath.at(path));
             // Independent same-stem sets with distinct first volumes retain their original suffixes.
             std::set<std::wstring> firstSuffixes;
             bool allowMixedSuffixes = family.second != 0;
@@ -380,15 +432,19 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
             if (listing.error != ERROR_SUCCESS) { plan.error = L"无法读取分卷所在目录"; return plan; }
             for (const auto& entry : listing.entries) if (!(entry.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) files.emplace_back(entry.path);
         }
-        if (kind == Kind::NamedPart) {
+        if (kind == Kind::NamedPart || kind == Kind::Numeric) {
             std::vector<std::wstring> candidates;
             for (const auto& file : files) {
                 NamedPart part;
-                if (ParsePart(Lower(file.filename().wstring()), part) && part.prefix == prefix) candidates.push_back(file.wstring());
+                const auto filename = Lower(file.filename().wstring());
+                const auto numeric = ParseNumericArchivePart(filename);
+                if (kind == Kind::Numeric ? numeric && numeric->base + L"." == prefix
+                    : ParsePart(filename, part) && part.prefix == prefix) candidates.push_back(file.wstring());
             }
             files.clear();
-            for (const auto& group : GroupNamedArchiveParts(candidates)) {
-                if (std::none_of(group.begin(), group.end(), [&](const auto& p) { return _wcsicmp(fs::path(p).lexically_normal().c_str(), absolute.c_str()) == 0; })) continue;
+            const auto groups = kind == Kind::Numeric ? GroupNumericArchiveParts(candidates) : GroupNamedArchiveParts(candidates);
+            for (const auto& group : groups) {
+                if (std::none_of(group.begin(), group.end(), [&](const auto& p) { return _wcsicmp(fs::absolute(p).lexically_normal().c_str(), absolute.c_str()) == 0; })) continue;
                 for (const auto& p : group) files.emplace_back(p);
                 break;
             }

@@ -372,6 +372,89 @@ private slots:
             for (const auto& volume : plan.volumes) QCOMPARE(QFileInfo(QString::fromStdWString(volume)).absolutePath(), folder);
         }
     }
+    void crossDirectoryCopiesStayIndependent_data() {
+        QTest::addColumn<QString>("style"); QTest::addColumn<QString>("format"); QTest::addColumn<QString>("intake");
+        const QList<QPair<QString, QString>> cases{{"numeric", "7z"}, {"masked", "zip"}, {"inserted", "7z"},
+            {"named", "7z"}, {"numeric", "rar"}, {"named", "rar"}};
+        for (const auto& entry : cases) for (const auto* intake : {"parent", "folders", "nested"}) {
+            const auto label = (entry.first + '-' + entry.second + '-' + intake).toUtf8();
+            QTest::newRow(label.constData()) << entry.first << entry.second << QString(intake);
+        }
+    }
+    void crossDirectoryCopiesStayIndependent() {
+        QFETCH(QString, style); QFETCH(QString, format); QFETCH(QString, intake); QTemporaryDir temp;
+        const auto selected = temp.filePath("selected"); QStringList files, folders;
+        QList<QByteArray> expected; QMap<QString, QByteArray> originals;
+        for (int group = 0; group < 3; ++group) {
+            QByteArray firstBytes, lastBytes;
+            if (format == "rar") {
+                firstBytes = Read(QFINDTESTDATA("fixtures/rar/sample.part1.rar"));
+                lastBytes = Read(QFINDTESTDATA("fixtures/rar/sample.part2.rar"));
+                expected << QByteArray("0123456789abcdef").repeated(384);
+            } else {
+                const auto payload = QByteArray(20000 + group * 1000, static_cast<char>('a' + group)); expected << payload;
+                const auto source = temp.filePath(QString("fixture%1/clip.mp4").arg(group)); QVERIFY(Write(source, payload));
+                const auto packed = temp.filePath(QString("whole%1.").arg(group) + format); QVERIFY(Pack({source}, packed, "folder-secret"));
+                const auto bytes = Read(packed); firstBytes = bytes.first(bytes.size() / 2); lastBytes = bytes.mid(bytes.size() / 2);
+            }
+            QString firstName = "same." + format + ".001", lastName = "same." + format + ".002";
+            if (style == "masked") { firstName = "p.001.pdf"; lastName = "p.002.pdf"; }
+            if (style == "inserted") { firstName = QStringLiteral("same.7z.00删除中文1"); lastName = QStringLiteral("same.7z.00删除中文2"); }
+            if (style == "named") { firstName = "same.part1.bin"; lastName = "same.part2.mask"; }
+            const auto base = selected + QString("/bundle%1").arg(group);
+            const auto firstDir = base + (group == 1 ? QString{} : "/volume1");
+            const auto lastDir = base + (group == 1 ? QString{} : "/volume2");
+            const auto first = firstDir + '/' + firstName, last = lastDir + '/' + lastName;
+            QVERIFY(Write(first, firstBytes)); QVERIFY(Write(last, lastBytes));
+            folders << lastDir << firstDir; files << last << first;
+            originals.insert(first, firstBytes); originals.insert(last, lastBytes);
+        }
+        const auto other = temp.filePath("fixture-other/other.mp4"); const QByteArray otherBytes("unrelated video");
+        QVERIFY(Write(other, otherBytes)); expected << otherBytes;
+        QVERIFY(Pack({other}, selected + "/unrelated/other.7z")); folders.prepend(selected + "/unrelated");
+        std::vector<std::wstring> context;
+        for (const auto& file : files) context.push_back(file.toStdWString());
+        context.push_back(context.front()); // Reinspection may see a file in both current and related inputs.
+        for (const auto& file : files) {
+            const auto plan = InspectArchiveFiles(file.toStdWString(), context);
+            QVERIFY2(plan.error.empty(), qPrintable(QString::fromStdWString(plan.error))); QCOMPARE(plan.volumes.size(), size_t(2));
+            const auto parent = QFileInfo(file).absolutePath();
+            const auto bundle = parent.endsWith("volume1") || parent.endsWith("volume2") ? QFileInfo(parent).absolutePath() : parent;
+            for (const auto& volume : plan.volumes) QVERIFY(QString::fromStdWString(volume).replace('\\', '/').startsWith(bundle + '/'));
+        }
+        ArchiveController controller(nullptr, temp.filePath("passwords.dat")); controller.organizeMedia = true; controller.autoPasswords = true;
+        QVERIFY(controller.addPasswordList("folder-test", "folder-secret")); controller.extractDestination = temp.filePath("output");
+        if (intake == "nested") {
+            QVERIFY(Pack({selected}, temp.filePath("outer.7z"))); controller.addPaths({temp.filePath("outer.7z")}, false);
+        } else controller.addPaths(intake == "folders" ? folders : QStringList{selected}, false);
+        QCOMPARE(controller.archives.size(), intake == "nested" ? size_t(1) : size_t(4));
+        QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+        QCOMPARE(controller.tasks.size(), intake == "nested" ? 5 : 4);
+        for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.input + ": " + task.detail));
+        QCOMPARE(controller.videoFiles.size(), 4);
+        for (const auto& file : controller.videoFiles) QVERIFY(expected.removeOne(Read(file)));
+        QVERIFY(expected.isEmpty());
+        QCOMPARE(controller.cleanedIntermediateFiles, intake == "nested" ? 7 : 0);
+        for (auto it = originals.cbegin(); it != originals.cend(); ++it) QCOMPARE(Read(it.key()), it.value());
+    }
+    void ambiguousCopiesDoNotBorrowEachOthersVolumes() {
+        QTemporaryDir temp; QVERIFY(Write(temp.filePath("clip.mp4"), QByteArray(30000, 'v')));
+        QVERIFY(Pack({temp.filePath("clip.mp4")}, temp.filePath("whole.7z")));
+        const auto bytes = Read(temp.filePath("whole.7z")); const auto cut = bytes.size() / 2;
+        const auto first = bytes.first(cut), last = bytes.mid(cut);
+        const auto root = temp.filePath("input");
+        QVERIFY(Write(root + "/complete/same.7z.001", first)); QVERIFY(Write(root + "/complete/same.7z.002", last));
+        QVERIFY(Write(root + "/incomplete/same.7z.001", first));
+        auto found = DiscoverInputs({root}); QCOMPARE(found.archives.size(), size_t(2));
+        int opened = 0;
+        for (const auto& plan : found.archives) { SevenZipCore core; if (core.OpenArchive(plan) && core.TestArchive()) ++opened; }
+        QCOMPARE(opened, 1);
+        const auto ambiguous = temp.filePath("ambiguous");
+        QVERIFY(Write(ambiguous + "/a/same.7z.001", first)); QVERIFY(Write(ambiguous + "/b/same.7z.001", first));
+        QVERIFY(Write(ambiguous + "/c/same.7z.002", last)); QVERIFY(Write(ambiguous + "/d/same.7z.002", last));
+        found = DiscoverInputs({ambiguous}); QCOMPARE(found.archives.size(), size_t(4));
+        for (const auto& plan : found.archives) { SevenZipCore core; QVERIFY(!core.OpenArchive(plan) || !core.TestArchive()); }
+    }
     void maskedNumericVolumes_data() {
         QTest::addColumn<QString>("intake"); QTest::addColumn<QString>("format"); QTest::addColumn<QString>("mask1"); QTest::addColumn<QString>("mask2");
         QTest::newRow("first-pdf") << QString("first") << QString("7z") << QString(".pdf") << QString();

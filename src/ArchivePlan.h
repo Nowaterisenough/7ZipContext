@@ -35,6 +35,7 @@ ArchivePlan InspectArchive(const std::wstring& path);
 ArchivePlan InspectArchiveFiles(const std::wstring& path, const std::vector<std::wstring>& relatedFiles);
 // Partition partN candidates before choosing an entry volume, including across nested directories.
 std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<std::wstring>& paths);
+std::vector<std::vector<std::wstring>> GroupNumericArchiveParts(const std::vector<std::wstring>& paths);
 std::wstring DetectArchiveSignature(const std::wstring& path);
 bool CorrectArchiveName(ArchivePlan& plan, std::wstring& error);
 std::wstring ArchiveOutputName(const ArchivePlan& plan);
