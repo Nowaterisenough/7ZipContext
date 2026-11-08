@@ -438,6 +438,21 @@ private slots:
         QString error; PasswordLibrary saved(temp.filePath("library.dat")); QVERIFY(saved.load(error));
         QCOMPARE(saved.enabledPasswords(), QStringList({"  quick-secret  "}));
     }
+    void compactExtractionActionIsVisibleAtTheTop() {
+        QTemporaryDir temp; ArchiveController controller(nullptr, temp.filePath("library.dat")); controller.rememberGeometry = false;
+        ArchiveWindow popup(controller, true); popup.show(); QTest::qWait(30);
+        popup.resize(440, 620); QCoreApplication::processEvents();
+        auto* start = popup.findChild<QPushButton*>("startExtraction");
+        auto* quick = popup.findChild<QLineEdit*>("quickPassword");
+        auto* addFiles = popup.findChild<QPushButton*>("addArchive");
+        auto* scroll = qobject_cast<QScrollArea*>(popup.pageWidget(0)); QVERIFY(scroll);
+        scroll->verticalScrollBar()->setValue(0);
+        QVERIFY(start->isVisible());
+        QVERIFY(start->mapTo(scroll->viewport(), QPoint()).y() >= 0);
+        QVERIFY(start->mapTo(scroll->viewport(), QPoint(0, start->height())).y() <= scroll->viewport()->height());
+        QVERIFY(start->mapTo(&popup, QPoint()).y() < quick->mapTo(&popup, QPoint()).y());
+        QVERIFY(quick->mapTo(&popup, QPoint()).y() < addFiles->mapTo(&popup, QPoint()).y());
+    }
     void updateControlsSynchronizeAndAreSearchable() {
         QTemporaryDir temporary;
         ArchiveController controller(nullptr, temporary.filePath("library.dat")); controller.rememberGeometry = false;

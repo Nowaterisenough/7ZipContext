@@ -44,6 +44,8 @@ the previous list names, source selector and multi-column editor are not shown.
 Its page stays alive alongside the other five pages in both windows. The native
 preview runner seeds an isolated temporary library, including duplicate legacy entries.
 Both extraction home pages provide an inline password input with Enter-to-save.
+The compact extraction page places its primary extraction action first, above the
+password input and file queue, so it is visible without scrolling.
 The extraction page's nested-extraction and media-organization choices reuse
 the existing settings-row typography and segmented control, and share their state between
 both windows. Media organization selects independent output directories and

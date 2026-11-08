@@ -384,6 +384,8 @@ QWidget* ArchiveWindow::makeQueue(bool sources) {
 
 QWidget* ArchiveWindow::makeExtractPage() {
     QVBoxLayout* layout; auto* page = Page(layout, "extractPage");
+    auto* start = Button(QStringLiteral("开始解压"), "startExtraction", true);
+    if (compact_) { start->setMinimumHeight(38); layout->addWidget(start); }
     auto* quickPassword = new QWidget;
     auto* quickLayout = new QHBoxLayout(quickPassword); quickLayout->setContentsMargins(0, 0, 0, 0); quickLayout->setSpacing(8);
     auto* savedPassword = Edit("quickPassword", QStringLiteral("输入常用密码，回车添加")); savedPassword->setMaxLength(1024);
@@ -424,9 +426,8 @@ QWidget* ArchiveWindow::makeExtractPage() {
     layout->addWidget(card);
     auto* actions = new QHBoxLayout;
     auto* test = Button(QStringLiteral("检测完整性"), "testArchives");
-    auto* start = Button(QStringLiteral("开始解压"), "startExtraction", true);
     actions->addWidget(test); actions->addWidget(correct); actions->addStretch();
-    actions->addWidget(start);
+    if (!compact_) actions->addWidget(start);
     layout->addLayout(actions); layout->addStretch();
     editable_ << add << folder << correct << remove << clear << card << test << start << quickPassword;
     connect(add, &QPushButton::clicked, this, [this] { pickFiles(); });
