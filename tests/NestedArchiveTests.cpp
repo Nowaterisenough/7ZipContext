@@ -406,6 +406,12 @@ private slots:
         QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
         QCOMPARE(controller.tasks.size(), intake == "nested" ? 2 : 1);
         for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
+        if (intake == "nested") {
+            QCOMPARE(controller.tasks.last().depth, 2U);
+            QCOMPARE(controller.tasks.last().rootInput, controller.tasks.first().input);
+            QCOMPARE(controller.tasks.last().inputFiles.size(), 2);
+            QVERIFY(controller.tasks.last().inputFiles.contains(controller.tasks.last().input));
+        }
         QCOMPARE(controller.videoFiles.size(), 1); QCOMPARE(Read(controller.videoFiles.first()), video);
         QCOMPARE(controller.cleanedIntermediateFiles, intake == "nested" ? 2 : 0);
         QCOMPARE(Read(first), bytes.first(cut)); QCOMPARE(Read(last), bytes.mid(cut));

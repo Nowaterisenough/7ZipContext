@@ -18,6 +18,10 @@ struct ArchiveTask {
     QString detail;
     QString output;
     bool success = false;
+    QString input, rootInput;
+    QStringList inputFiles;
+    unsigned depth = 0;
+    bool mediaInput = false;
 };
 
 class ArchiveController final : public QObject {

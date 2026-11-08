@@ -55,6 +55,10 @@ private slots:
         QVERIFY(controller.start(ArchiveController::Operation::Extract)); QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
         QCOMPARE(controller.tasks.size(), 3);
         for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
+        for (const auto& task : controller.tasks) {
+            QVERIFY(QDir::isAbsolutePath(task.input)); QCOMPARE(task.rootInput, task.input); QVERIFY(!task.inputFiles.isEmpty());
+            QCOMPARE(task.depth, task.mediaInput ? 0U : 1U);
+        }
         QCOMPARE(controller.videoFiles.size(), 3); QCOMPARE(controller.imageFiles.size(), 1);
         QCOMPARE(Read(temp.filePath(QStringLiteral("output/loose/视频/standalone.mp4"))), QByteArray("direct-video"));
         QCOMPARE(Read(temp.filePath(QStringLiteral("output/loose/图片/photo.jpg"))), original.value(input + "/loose/photo.jpg"));

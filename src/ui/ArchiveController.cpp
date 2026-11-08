@@ -398,6 +398,8 @@ bool ArchiveController::start(Operation operation, int selected) {
                     extractionDepth_ = result.extraction ? job.depth : 0;
                     phase_ = Phase::Opening; passwordAttempt_ = 0; passwordTotal_ = 0;
                     ArchiveTask task{Q(fs::path(plan.input).filename().wstring()), Q(plan.error), {}, false};
+                    task.input = Q(plan.input); task.rootInput = Q(jobs[job.root].plan.input); task.depth = job.depth;
+                    for (const auto& file : plan.volumes) task.inputFiles.append(Q(file));
                     ArchivePasswordResult resolved;
                     if (plan.error.empty()) {
                         const auto candidates = BuildPasswordCandidates(secret, taskLists, useLists, matches.value(ArchiveKey(plan.firstVolume)), recent);
@@ -558,7 +560,9 @@ bool ArchiveController::start(Operation operation, int selected) {
                     ++jobIndex_; extractionDepth_ = 0; completed_ = 0; total_ = 0;
                     phase_ = operation == Operation::Test ? Phase::Testing : Phase::CopyingMedia;
                     const auto copied = ProcessMediaInput(group, destination, operation == Operation::Test, progress);
-                    result.tasks.append({group.name, copied.detail, copied.output, copied.success});
+                    ArchiveTask task{group.name, copied.detail, copied.output, copied.success};
+                    task.input = task.rootInput = group.directory; task.inputFiles = group.files; task.mediaInput = true;
+                    result.tasks.append(std::move(task));
                     result.videos.append(copied.videos); result.images.append(copied.images);
                 }
             }

@@ -64,7 +64,9 @@ int main(int argc, char** argv) {
         controller.organizeMedia = !keepLayout;
         auto record = [&] {
             QJsonArray tasks, videos, images;
-            for (const auto& task : controller.tasks) tasks.append(QJsonObject{{"name", task.name}, {"detail", task.detail}, {"output", task.output}, {"success", task.success}});
+            for (const auto& task : controller.tasks) tasks.append(QJsonObject{{"name", task.name}, {"detail", task.detail}, {"output", task.output}, {"success", task.success},
+                {"input", task.input}, {"rootInput", task.rootInput}, {"inputFiles", QJsonArray::fromStringList(task.inputFiles)},
+                {"depth", static_cast<int>(task.depth)}, {"kind", task.mediaInput ? "media" : "archive"}});
             for (const auto& path : controller.videoFiles) videos.append(path);
             for (const auto& path : controller.imageFiles) images.append(path);
             const auto bytes = QJsonDocument(QJsonObject{{"busy", controller.busy()}, {"status", controller.status()},
