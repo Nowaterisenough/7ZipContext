@@ -26,6 +26,8 @@ struct NumericArchivePart {
     std::wstring base;
     unsigned index;
     bool masked;
+    // Names such as p.001.pdf are candidates only when the bundle has an archive signature.
+    bool requiresSignature;
 };
 std::optional<NumericArchivePart> ParseNumericArchivePart(const std::wstring& filename);
 

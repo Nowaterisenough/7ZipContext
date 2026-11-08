@@ -885,7 +885,7 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
     if (!plan.error.empty()) { m_error = plan.error; return false; }
     if (plan.concatenated) {
         auto stream = new CVolumeInStream;
-        if (!stream->Open(plan.volumes)) { stream->Release(); m_error = L"无法读取分卷"; return false; }
+        if (!stream->Open(plan.volumes, plan.dataOffset, plan.dataSize)) { stream->Release(); m_error = L"无法读取分卷"; return false; }
         m_inStream = stream;
     } else {
         auto stream = new CFullInFileStream;
@@ -940,14 +940,15 @@ bool SevenZipCore::OpenArchive(const ArchivePlan& plan, const std::wstring& pass
     // Never report those files as consumed (nested cleanup would then remove them).
     if (plan.volumes.size() > 1) {
         bool unused = false;
-        if (plan.format == L"rar" || plan.format == L"rar5") {
+        if (!plan.concatenated && (plan.format == L"rar" || plan.format == L"rar5")) {
             m_archive->GetArchiveProperty(kpidNumVolumes, &diagnostics);
             unused = diagnostics.vt == VT_UI4 && diagnostics.ulVal != plan.volumes.size();
-        } else if (plan.concatenated && (plan.format == L"7z" || plan.format == L"zip")) {
+        } else if (plan.concatenated) {
             m_archive->GetArchiveProperty(kpidPhySize, &diagnostics);
             std::error_code ec;
             const auto lastSize = std::filesystem::file_size(NativePath(plan.volumes.back()), ec);
-            unused = !ec && lastSize <= plan.size && diagnostics.vt == VT_UI8 && diagnostics.uhVal.QuadPart <= plan.size - lastSize;
+            unused = !ec && lastSize <= plan.size && plan.dataOffset <= plan.size - lastSize &&
+                diagnostics.vt == VT_UI8 && diagnostics.uhVal.QuadPart <= plan.size - lastSize - plan.dataOffset;
         }
         PropVariantClear(&diagnostics);
         if (unused) { CloseArchive(); m_error = L"压缩内容未使用全部候选分卷，请检查分卷是否属于同一压缩包"; return false; }

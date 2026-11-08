@@ -254,21 +254,28 @@ std::wstring Signature(const fs::path& path, uint64_t* dataOffset = nullptr, uin
 std::optional<NumericArchivePart> ParseNumericArchivePart(const std::wstring& filename) {
     const auto dot = filename.rfind(L'.');
     if (dot == std::wstring::npos || dot == 0 || dot + 1 == filename.size()) return {};
-    const auto parseNumber = [](const std::wstring& text) -> std::optional<unsigned> {
+    const auto parseNumber = [](std::wstring text) -> std::optional<unsigned> {
+        // Download names sometimes insert an instruction inside the volume number.
+        // Normalize only known markers in this component; never rename the source file.
+        for (const std::wstring marker : {L"删除中文", L"删掉中文", L"去掉中文", L"删除汉字", L"删掉汉字", L"删除", L"删掉", L"去掉", L"删"}) {
+            for (auto at = text.find(marker); at != std::wstring::npos; at = text.find(marker)) text.erase(at, marker.size());
+        }
         if (text.size() < 3 || text.size() > 6 || text.find_first_not_of(L"0123456789") != std::wstring::npos) return {};
         return static_cast<unsigned>(std::stoul(text));
     };
-    if (const auto number = parseNumber(filename.substr(dot + 1))) return NumericArchivePart{filename.substr(0, dot), *number, false};
+    static const std::set<std::wstring> formats{L".7z", L".zip", L".rar", L".tar", L".gz", L".tgz", L".bz2", L".tbz2", L".xz", L".cab", L".iso"};
+    const auto part = [&](size_t baseEnd, unsigned number, bool masked) {
+        const auto base = filename.substr(0, baseEnd);
+        return NumericArchivePart{base, number, masked, !formats.contains(Lower(fs::path(base).extension().wstring()))};
+    };
+    if (const auto number = parseNumber(filename.substr(dot + 1)))
+        return part(dot, *number, filename.substr(dot + 1).find_first_not_of(L"0123456789") != std::wstring::npos);
 
     const auto numberDot = filename.rfind(L'.', dot - 1);
-    if (numberDot == std::wstring::npos) return {};
+    if (numberDot == std::wstring::npos || numberDot == 0) return {};
     const auto number = parseNumber(filename.substr(numberDot + 1, dot - numberDot - 1));
     if (!number) return {};
-    const auto base = filename.substr(0, numberDot);
-    // Only strip a disguise after an archive extension; chapter.001.pdf and photo.002.jpg are ordinary filenames.
-    static const std::set<std::wstring> formats{L".7z", L".zip", L".rar", L".tar", L".gz", L".tgz", L".bz2", L".tbz2", L".xz", L".cab", L".iso"};
-    if (!formats.contains(Lower(fs::path(base).extension().wstring()))) return {};
-    return NumericArchivePart{base, *number, true};
+    return part(numberDot, *number, true);
 }
 
 std::vector<std::vector<std::wstring>> GroupNamedArchiveParts(const std::vector<std::wstring>& paths) {
@@ -439,12 +446,23 @@ static ArchivePlan InspectArchiveImpl(const std::wstring& path, const std::vecto
         else if (ext == L".exe") plan.format = L"sfx";
         else { plan.error = L"未识别到支持的压缩包文件头"; return plan; }
     }
-    if (kind == Kind::NamedPart) {
-        const bool nativeRar = plan.format == L"rar" || plan.format == L"rar5";
+    if (kind == Kind::NamedPart || kind == Kind::Numeric) {
+        bool nativeRar = plan.format == L"rar" || plan.format == L"rar5";
+        // A numeric suffix can describe either native RAR volumes or byte-split data.
+        // Native RAR repeats its marker; byte-split RAR must remain concatenated.
+        if (kind == Kind::Numeric) {
+            nativeRar = nativeRar && plan.volumes.size() > 1 && std::all_of(plan.volumes.begin(), plan.volumes.end(), [&](const auto& path) {
+                std::ifstream file(fs::path(NativePath(path)), std::ios::binary); std::array<unsigned char, 8> head{};
+                file.read(reinterpret_cast<char*>(head.data()), head.size());
+                return RarVersion(head.data(), static_cast<size_t>(file.gcount())) == (plan.format == L"rar5" ? 5 : 4);
+            });
+        }
         plan.concatenated = !nativeRar;
         if (nativeRar) {
             NamedPart firstPart;
-            ParsePart(Lower(fs::path(plan.firstVolume).filename().wstring()), firstPart);
+            const auto firstName = Lower(fs::path(plan.firstVolume).filename().wstring());
+            if (kind == Kind::NamedPart) ParsePart(firstName, firstPart);
+            else firstPart = {ParseNumericArchivePart(firstName)->base + L".part", L"001", L".rar"};
             for (size_t i = 0; i < plan.volumes.size(); ++i) {
                 std::wostringstream alias;
                 alias << firstPart.prefix << std::setfill(L'0') << std::setw(static_cast<int>(firstPart.digits.size())) << i + 1 << L".rar";

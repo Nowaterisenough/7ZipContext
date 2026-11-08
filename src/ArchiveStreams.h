@@ -4,19 +4,22 @@
 class CVolumeInStream final : public IInStream {
     struct Part { HANDLE file; UInt64 start; UInt64 size; };
     std::vector<Part> parts;
-    UInt64 position = 0, length = 0;
+    UInt64 position = 0, length = 0, base = 0;
     ULONG refs = 1;
 public:
     ~CVolumeInStream() { for (auto& part : parts) CloseHandle(part.file); }
-    bool Open(const std::vector<std::wstring>& paths) {
+    bool Open(const std::vector<std::wstring>& paths, UInt64 dataOffset = 0, UInt64 dataSize = 0) {
         for (const auto& path : paths) {
             HANDLE file = CreateFileW(NativePath(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
             if (file == INVALID_HANDLE_VALUE) return false;
             LARGE_INTEGER size{};
-            if (!GetFileSizeEx(file, &size)) { CloseHandle(file); return false; }
+            if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 ||
+                static_cast<UInt64>(size.QuadPart) > static_cast<UInt64>((std::numeric_limits<Int64>::max)()) - length) { CloseHandle(file); return false; }
             parts.push_back({file, length, static_cast<UInt64>(size.QuadPart)});
             length += size.QuadPart;
         }
+        if (dataOffset > length || dataSize > length - dataOffset) return false;
+        base = dataOffset; length = dataSize ? dataSize : length - base;
         return true;
     }
     STDMETHOD(QueryInterface)(REFIID iid, void** out) noexcept {
@@ -28,10 +31,12 @@ public:
     STDMETHOD_(ULONG, Release)() noexcept { auto result = --refs; if (!result) delete this; return result; }
     STDMETHOD(Read)(void* data, UInt32 size, UInt32* processed) noexcept {
         if (processed) *processed = 0;
+        if (position >= length) return S_OK;
+        size = static_cast<UInt32>((std::min)(static_cast<UInt64>(size), length - position));
         UInt32 done = 0;
         for (const auto& part : parts) {
-            if (!size || position < part.start || position >= part.start + part.size) continue;
-            LARGE_INTEGER offset{}; offset.QuadPart = position - part.start;
+            if (!size || base + position < part.start || base + position >= part.start + part.size) continue;
+            LARGE_INTEGER offset{}; offset.QuadPart = base + position - part.start;
             if (!SetFilePointerEx(part.file, offset, nullptr, FILE_BEGIN)) return HRESULT_FROM_WIN32(GetLastError());
             DWORD count = 0;
             auto request = static_cast<DWORD>((std::min)(static_cast<UInt64>(size), part.size - offset.QuadPart));
@@ -44,8 +49,10 @@ public:
     }
     STDMETHOD(Seek)(Int64 offset, UInt32 origin, UInt64* result) noexcept {
         if (origin > STREAM_SEEK_END) return STG_E_INVALIDFUNCTION;
-        Int64 next = (origin == STREAM_SEEK_SET ? 0 : origin == STREAM_SEEK_CUR ? position : length) + offset;
-        if (next < 0) return STG_E_INVALIDFUNCTION;
+        const auto start = static_cast<Int64>(origin == STREAM_SEEK_SET ? 0 : origin == STREAM_SEEK_CUR ? position : length);
+        if (offset < -start || (offset > 0 && offset > (std::numeric_limits<Int64>::max)() - start)) return STG_E_INVALIDFUNCTION;
+        const auto next = static_cast<UInt64>(start + offset);
+        if (next > static_cast<UInt64>((std::numeric_limits<Int64>::max)()) - base) return STG_E_INVALIDFUNCTION;
         position = next;
         if (result) *result = position;
         return S_OK;

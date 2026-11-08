@@ -43,6 +43,18 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
     NestedArchiveScan result;
     QMap<QString, QStringList> groups;
     QSet<QString> candidates;
+    auto classifyFile = [&](const QString& path) {
+        const QFileInfo info(path);
+        if (probePdfs && info.suffix().compare("pdf", Qt::CaseInsensitive) == 0) {
+            ArchivePlan probe; probe.input = probe.firstVolume = path.toStdWString(); probe.volumes.push_back(probe.input);
+            probe.format = L"probe"; probe.probePdf = true; probe.size = static_cast<uint64_t>(info.size()); result.archives.push_back(std::move(probe));
+            return;
+        }
+        const auto media = DetectMediaFile(path);
+        if (media.kind == MediaKind::Video) result.videos.append(path);
+        if (media.kind == MediaKind::Image) result.images.append(path);
+        if (media.kind == MediaKind::None) result.ignored.append(path);
+    };
     std::vector<std::wstring> context;
     for (const auto& file : files + relatedFiles) context.push_back(file.toStdWString());
     for (const auto& path : files) {
@@ -54,35 +66,24 @@ NestedArchiveScan FindNestedArchives(const QStringList& files, ProgressCallback 
         const auto numeric = ParseNumericArchivePart(name.toStdWString());
         const auto group = VolumeGroup(name, numeric);
         if (FinishedZipContainer(info, signature)) {
-            if (!group.startsWith("part:") && !group.startsWith("numeric:")) { result.ignored.append(path); continue; }
+            if (!group.startsWith("part:") && (!numeric || numeric->requiresSignature)) { result.ignored.append(path); continue; }
         }
         if (!group.isEmpty()) {
             groups[group].append(path);
-            if (!signature.empty() || ArchiveName(name) || (numeric && numeric->masked)) candidates.insert(group);
+            if (!signature.empty() || ArchiveName(name) || (numeric && !numeric->requiresSignature)) candidates.insert(path);
         } else if (!signature.empty() || ArchiveName(name)) {
             result.archives.push_back(InspectArchiveFiles(path.toStdWString(), context));
-        } else if (probePdfs && info.suffix().compare("pdf", Qt::CaseInsensitive) == 0) {
-            ArchivePlan probe; probe.input = probe.firstVolume = path.toStdWString(); probe.volumes.push_back(probe.input);
-            probe.format = L"probe"; probe.probePdf = true; probe.size = static_cast<uint64_t>(info.size()); result.archives.push_back(std::move(probe));
         } else {
-            const auto media = DetectMediaFile(path);
-            if (media.kind == MediaKind::Video) result.videos.append(path);
-            if (media.kind == MediaKind::Image) result.images.append(path);
-            if (media.kind == MediaKind::None) result.ignored.append(path);
+            classifyFile(path);
         }
     }
     for (auto group = groups.cbegin(); group != groups.cend(); ++group) {
         if (progress && !progress(0, 0)) { result.cancelled = true; return result; }
-        if (!candidates.contains(group.key())) {
-            for (const auto& path : group.value()) {
-                const auto media = DetectMediaFile(path);
-                if (media.kind == MediaKind::Video) result.videos.append(path);
-                if (media.kind == MediaKind::Image) result.images.append(path);
-                if (media.kind == MediaKind::None) result.ignored.append(path);
-            }
-            continue;
-        }
         const auto inspectBundle = [&](const std::vector<std::wstring>& bundle) {
+            if (std::none_of(bundle.begin(), bundle.end(), [&](const auto& path) { return candidates.contains(QString::fromStdWString(path)); })) {
+                for (const auto& path : bundle) classifyFile(QString::fromStdWString(path));
+                return;
+            }
             auto plan = InspectArchiveFiles(bundle.front(), bundle);
             if (plan.format == L"zip" && !plan.concatenated) {
                 auto native = InspectArchiveFiles(plan.firstVolume, context);
