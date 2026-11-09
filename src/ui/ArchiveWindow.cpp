@@ -24,7 +24,6 @@
 #include <QSet>
 #include <QShortcut>
 #include <QSignalBlocker>
-#include <QStandardPaths>
 #include <QStyledItemDelegate>
 #include <QStyleFactory>
 #include <QStyleOptionComboBox>
@@ -408,7 +407,7 @@ QWidget* ArchiveWindow::makeExtractPage() {
     layout->addLayout(toolbar);
     archiveCount_ = Label({}, true); layout->addWidget(archiveCount_); layout->addWidget(makeQueue(false));
     auto* card = Card();
-    extractDestination_ = Edit("extractDestination", QDir::toNativeSeparators(QDir(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).filePath(QStringLiteral("整理结果"))));
+    extractDestination_ = Edit("extractDestination", QStringLiteral("当前目录（源文件所在目录）"));
     auto* browse = Button(QStringLiteral("选择…"), "browseExtraction");
     Row(card, QStringLiteral("保存位置"), {}, WithBrowse(extractDestination_, browse));
     extractMode_ = Segments("extractMode", {QStringLiteral("独立目录"), QStringLiteral("直接解压")});

@@ -321,7 +321,6 @@ void ArchiveController::applyDiscoveredInputs(DiscoveredInputs inputs) {
 
 void ArchiveController::extractPaths(const QStringList& paths) {
     if (busy() || paths.isEmpty()) return;
-    if (extractDestination.isEmpty()) extractDestination = QDir(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).filePath(QStringLiteral("整理结果"));
     queuePaths(paths, false, true, true);
 }
 
@@ -388,11 +387,7 @@ bool ArchiveController::start(Operation operation, int selected) {
         archiveName.endsWith('.') || archiveName.endsWith(' '))) {
         setStatus(QStringLiteral("请输入有效的压缩包名称")); return false;
     }
-    auto destination = compress ? compressDestination.trimmed() : extractDestination.trimmed();
-    if (!compress && operation == Operation::Extract && destination.isEmpty()) {
-        destination = QDir(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).filePath(QStringLiteral("整理结果"));
-        extractDestination = destination; emit optionsChanged();
-    }
+    const auto destination = compress ? compressDestination.trimmed() : extractDestination.trimmed();
     if (!destination.isEmpty() && !QDir::isAbsolutePath(destination)) {
         setStatus(QStringLiteral("保存位置需要使用完整路径")); return false;
     }

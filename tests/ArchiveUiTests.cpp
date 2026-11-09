@@ -243,6 +243,12 @@ private slots:
     void trayAndMainShareSettingsWithoutShowingHiddenWindows() {
         ArchiveController controller; controller.rememberGeometry = false; controller.organizeMedia = true;
         ArchiveWindow main(controller), popup(controller, true);
+        QVERIFY(controller.extractDestination.isEmpty());
+        for (auto* window : {&main, &popup}) {
+            auto* destination = window->findChild<QLineEdit*>("extractDestination"); QVERIFY(destination);
+            QVERIFY(destination->text().isEmpty());
+            QCOMPARE(destination->placeholderText(), QStringLiteral("当前目录（源文件所在目录）"));
+        }
         main.show(); main.navigate("extract");
         auto* media = main.findChild<QTabBar*>("organizeMedia"); QVERIFY(media);
         QVERIFY(!main.findChild<QTabBar*>("autoNested")->isEnabled());

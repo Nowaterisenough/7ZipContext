@@ -66,6 +66,46 @@ private slots:
         QVERIFY(QDir(temp.filePath("output/loose")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
         for (auto it = original.cbegin(); it != original.cend(); ++it) QCOMPARE(Read(it.key()), it.value());
     }
+    void emptyDestinationUsesEachSourceDirectory_data() {
+        QTest::addColumn<bool>("automatic"); QTest::addColumn<bool>("organize");
+        QTest::newRow("manual-organized") << false << true;
+        QTest::newRow("automatic-organized") << true << true;
+        QTest::newRow("manual-direct") << false << false;
+        QTest::newRow("automatic-direct") << true << false;
+    }
+    void emptyDestinationUsesEachSourceDirectory() {
+        QFETCH(bool, automatic); QFETCH(bool, organize);
+        QTemporaryDir temp;
+        const auto video = temp.filePath("fixture/video.mp4"), image = temp.filePath("fixture/photo.jpg");
+        const QByteArray photo = QByteArray::fromHex("ffd8ffe0") + "photo";
+        QVERIFY(Write(video, "video")); QVERIFY(Write(image, photo));
+        const auto first = temp.filePath("one/archive.7z"), second = temp.filePath("two/archive.7z");
+        QVERIFY(Pack({video, image}, first)); QVERIFY(Pack({video, image}, second));
+        const auto firstBytes = Read(first), secondBytes = Read(second);
+        const auto loose = temp.filePath("loose/photo.jpg"); QVERIFY(Write(loose, photo));
+        ArchiveController controller(nullptr, temp.filePath("passwords.dat"));
+        controller.organizeMedia = organize; controller.subfolder = false;
+        QVERIFY(controller.extractDestination.isEmpty());
+        if (automatic) controller.extractPaths({first, second, loose});
+        else {
+            controller.addPaths({first, second, loose}, false);
+            QVERIFY(controller.start(ArchiveController::Operation::Extract));
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy(), 20000);
+        QCOMPARE(controller.tasks.size(), 3);
+        for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
+        for (const auto& directory : {QString("one"), QString("two")}) {
+            const auto root = temp.filePath(directory + (organize ? "/archive" : ""));
+            QCOMPARE(Read(root + "/video.mp4"), QByteArray("video"));
+            QCOMPARE(Read(root + "/photo.jpg"), photo);
+            QVERIFY(QDir(root).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
+        }
+        const auto mediaRoot = temp.filePath(QStringLiteral("loose/媒体文件"));
+        QCOMPARE(Read(mediaRoot + "/photo.jpg"), photo);
+        QVERIFY(QDir(mediaRoot).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
+        QCOMPARE(Read(first), firstBytes); QCOMPARE(Read(second), secondBytes); QCOMPARE(Read(loose), photo);
+        QVERIFY(controller.extractDestination.isEmpty());
+    }
     void selectingLaterVolumeStillDiscoversTheWholeGroup() {
         QTemporaryDir temp; const auto source = temp.filePath("fixture/clip.mp4"); QVERIFY(Write(source, QByteArray(40000, 'v')));
         QVERIFY(Pack({source}, temp.filePath("input/archive.7z"), true));
