@@ -421,8 +421,8 @@ QWidget* ArchiveWindow::makeExtractPage() {
     Row(card, QStringLiteral("自动解压内层"), {}, autoNested_);
     organizeMedia_ = Segments("organizeMedia", {QStringLiteral("关闭"), QStringLiteral("开启")});
     organizeMedia_->setAccessibleName(QStringLiteral("仅保留视频和图片"));
-    organizeMedia_->setToolTip(QStringLiteral("每组压缩包解压成功后，整理到独立子文件夹的“视频”和“图片”目录，再删除其他解压文件。无媒体、失败或取消时保留内容；原始压缩包和已有文件保留。"));
-    Row(card, QStringLiteral("仅保留视频和图片"), QStringLiteral("整理至“视频 / 图片”，删除其他解压文件"), organizeMedia_, true);
+    organizeMedia_->setToolTip(QStringLiteral("每组压缩包解压成功后，将视频和图片直接放在独立子文件夹中，再删除其他解压文件。无媒体、失败或取消时保留内容；原始压缩包和已有文件保留。"));
+    Row(card, QStringLiteral("仅保留视频和图片"), QStringLiteral("视频和图片放在同一文件夹，删除其他解压文件"), organizeMedia_, true);
     layout->addWidget(card);
     auto* actions = new QHBoxLayout;
     auto* test = Button(QStringLiteral("检测完整性"), "testArchives");

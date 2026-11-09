@@ -60,9 +60,10 @@ private slots:
             QCOMPARE(task.depth, task.mediaInput ? 0U : 1U);
         }
         QCOMPARE(controller.videoFiles.size(), 3); QCOMPARE(controller.imageFiles.size(), 1);
-        QCOMPARE(Read(temp.filePath(QStringLiteral("output/loose/视频/standalone.mp4"))), QByteArray("direct-video"));
-        QCOMPARE(Read(temp.filePath(QStringLiteral("output/loose/图片/photo.jpg"))), original.value(input + "/loose/photo.jpg"));
-        QCOMPARE(Read(temp.filePath(QStringLiteral("output/disguised/视频/clip.mp4"))), payload);
+        QCOMPARE(Read(temp.filePath("output/loose/standalone.mp4")), QByteArray("direct-video"));
+        QCOMPARE(Read(temp.filePath("output/loose/photo.jpg")), original.value(input + "/loose/photo.jpg"));
+        QCOMPARE(Read(temp.filePath("output/disguised/clip.mp4")), payload);
+        QVERIFY(QDir(temp.filePath("output/loose")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
         for (auto it = original.cbegin(); it != original.cend(); ++it) QCOMPARE(Read(it.key()), it.value());
     }
     void selectingLaterVolumeStillDiscoversTheWholeGroup() {
@@ -169,8 +170,8 @@ private slots:
         QCOMPARE(controller.tasks.size(), 3); QCOMPARE(controller.videoFiles.size(), 2); QCOMPARE(controller.imageFiles.size(), 1);
         for (const auto& task : controller.tasks) QVERIFY2(task.success, qPrintable(task.detail));
         QCOMPARE(busyStates.count(false), 1); QVERIFY(!busyStates.last());
-        QCOMPARE(Read(temp.filePath(QStringLiteral("output/archive/视频/video.mp4"))), QByteArray("packed-video"));
-        QCOMPARE(Read(temp.filePath(QStringLiteral("output/second/视频/new.mp4"))), QByteArray("next-batch"));
+        QCOMPARE(Read(temp.filePath("output/archive/video.mp4")), QByteArray("packed-video"));
+        QCOMPARE(Read(temp.filePath("output/second/new.mp4")), QByteArray("next-batch"));
         QVERIFY(!QFileInfo::exists(temp.filePath("output/archive (2)")));
     }
     void cancelledAutomaticIntakeDoesNotStartExtraction() {

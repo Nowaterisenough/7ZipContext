@@ -65,10 +65,10 @@ bool MoveGeneratedFile(const IntermediateFile& file, const QString& destination,
     BY_HANDLE_FILE_INFORMATION rootInfo{}, parentInfo{};
     const auto rootPath = FinalPath(root.get()), resolvedParent = FinalPath(parent.get());
     if (rootPath.isEmpty() || !file.resolvedPath.startsWith(rootPath + '/') ||
-        !resolvedParent.startsWith(rootPath + '/') ||
+        (resolvedParent != rootPath && !resolvedParent.startsWith(rootPath + '/')) ||
         !GetFileInformationByHandle(root.get(), &rootInfo) || !GetFileInformationByHandle(parent.get(), &parentInfo) ||
         ((rootInfo.dwFileAttributes | parentInfo.dwFileAttributes) & FILE_ATTRIBUTE_REPARSE_POINT)) {
-        error = QStringLiteral("分类目录无效或不在本次输出范围内，已停止整理"); return false;
+        error = QStringLiteral("目标目录无效或不在本次输出范围内，已停止整理"); return false;
     }
     FileHandle handle(CreateFileW(NativePath(file.path.toStdWString()).c_str(), FILE_READ_ATTRIBUTES | DELETE, FILE_SHARE_READ,
                                  nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));

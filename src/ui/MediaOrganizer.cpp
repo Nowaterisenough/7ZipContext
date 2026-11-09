@@ -69,17 +69,11 @@ MediaOrganizationResult OrganizeExtractedMedia(const QString& outputRoot, const 
         else media.append({file, type});
     }
     if (media.isEmpty()) { result.success = true; result.noMedia = true; return result; }
-    const auto videos = QDir(outputRoot).filePath(QStringLiteral("视频")), images = QDir(outputRoot).filePath(QStringLiteral("图片"));
-    for (const auto& folder : {videos, images}) {
-        if (!QDir().mkpath(folder) || (GetFileAttributesW(NativePath(folder.toStdWString()).c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)) {
-            result.error = QStringLiteral("无法创建安全的媒体分类目录，其他文件已保留"); return result;
-        }
-    }
     QSet<QString> reserved;
     QList<IntermediateFile> movedFiles;
     std::sort(media.begin(), media.end(), [](const auto& a, const auto& b) { return a.file.path < b.file.path; });
     for (const auto& entry : media) {
-        auto target = QDir(entry.type.kind == MediaKind::Video ? videos : images).filePath(TargetName(entry.file, entry.type));
+        auto target = QDir(outputRoot).filePath(TargetName(entry.file, entry.type));
         const QFileInfo desired(target); unsigned suffix = 2;
         while (reserved.contains(Key(target)) || (QFileInfo::exists(target) && Key(target) != Key(entry.file.path))) {
             target = desired.dir().filePath(desired.completeBaseName() + QStringLiteral(" (%1).").arg(suffix++) + desired.suffix());
@@ -108,7 +102,7 @@ MediaOrganizationResult OrganizeExtractedMedia(const QString& outputRoot, const 
     for (const auto& directory : directories) {
         if (progress && !progress(0, 0)) { result.error = QStringLiteral("已取消清理空目录"); return result; }
         const auto key = Key(directory);
-        if (key == Key(videos) || key == Key(images) || !key.startsWith(Key(outputRoot) + '/')) continue;
+        if (!key.startsWith(Key(outputRoot) + '/')) continue;
         const auto attributes = GetFileAttributesW(NativePath(directory.toStdWString()).c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
         const auto resolved = QFileInfo(directory).canonicalFilePath();
